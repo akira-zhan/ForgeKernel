@@ -971,8 +971,13 @@ ncu_bounded() {{
     return 0
 }}
 
-# Must match KEY_METRICS in src/forgekernel/inner/ncu.py.
-NCU_METRICS="gpu__time_active.sum,launch__registers_per_thread,l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum,l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum,l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum,l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum,sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_elapsed,smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio,smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio,smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio,dram__throughput.avg.pct_of_peak_sustained_elapsed,dram__bytes_read.sum,dram__bytes_write.sum,dram__bytes_op_read.sum,dram__bytes_op_write.sum,launch__shared_mem_per_block_static,launch__shared_mem_per_block_dynamic"
+# Must match KEY_METRICS in src/forgekernel/inner/ncu.py (+ ARCH_EXTRA_METRICS below).
+NCU_METRICS="gpu__time_active.sum,launch__registers_per_thread,l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum,l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum,l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_st.sum,l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ld.sum,l1tex__data_pipe_lsu_wavefronts_mem_shared_op_st.sum,l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ld.sum,sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed,sm__warps_active.avg.pct_of_peak_sustained_elapsed,smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio,smsp__average_warps_issue_stalled_mio_throttle_per_issue_active.ratio,smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio,dram__throughput.avg.pct_of_peak_sustained_elapsed,dram__bytes_read.sum,dram__bytes_write.sum,dram__bytes_op_read.sum,dram__bytes_op_write.sum,launch__shared_mem_per_block_static,launch__shared_mem_per_block_dynamic"
+# sm_120 only: ARCH_EXTRA_METRICS["sm_120"] in src/forgekernel/inner/ncu.py (cp.async fills
+# are invisible to the smem counters above; SASS-patched counters cost an extra replay pass).
+case "$CUTE_DSL_ARCH" in
+    sm_120*) NCU_METRICS="$NCU_METRICS,sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts.sum,sm__sass_inst_executed_op_ldgsts.sum" ;;
+esac
 
 case "$TASK" in
     correctness) run_with_timeout python3 eval/bench.py --mode correctness ;;

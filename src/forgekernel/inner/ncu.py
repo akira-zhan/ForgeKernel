@@ -89,6 +89,26 @@ KEY_METRICS: dict[str, str] = {
 # gpu_entry.sh should request exactly what the parser knows how to read.
 NCU_METRICS_ARG = ",".join(KEY_METRICS)
 
+# Requested only when the card's CUTE_DSL_ARCH matches the prefix (gpu_entry.sh appends
+# them to NCU_METRICS). sm_120 mainloops are fed by cp.async, and an LDGSTS fill into
+# shared memory is invisible to every smem counter above -- on GB202 it reads 0 in
+# ``..._op_st`` and even in the hardware ``l1tex__..._op_ldgsts`` counters. Only the
+# SASS-patched counter sees it, and a conflicting fill shows there as MORE WAVEFRONTS
+# PER LDGSTS (4 at 16 B per lane when conflict-free), never as bank conflicts (the
+# SASS-patched conflict twin reads 0 too) -- hw_kb/*/sm120/smem_traffic_triage.md.
+# SASS patching costs NCU an extra replay pass, hence arch-gated, not in KEY_METRICS.
+ARCH_EXTRA_METRICS: dict[str, dict[str, str]] = {
+    "sm_120": {
+        "sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts.sum": "smem_wavefronts_ldgsts",
+        "sm__sass_inst_executed_op_ldgsts.sum": "ldgsts_inst",
+    },
+}
+
+# Everything the parser maps to a short key: the always-requested metrics plus every
+# arch's extras (a metric that was not requested is simply absent from the CSV).
+_PARSED_METRICS: dict[str, str] = {
+    **KEY_METRICS, **{k: v for extra in ARCH_EXTRA_METRICS.values() for k, v in extra.items()}}
+
 # Launch geometry comes back as standard NCU CSV *columns*, not metrics — no
 # `--metrics` request needed, and it is therefore readable from NCU output that
 # predates this mapping. Values are dim tuples ("(256, 1, 1)"); stored as the
@@ -102,7 +122,7 @@ LAUNCH_COLUMNS: dict[str, str] = {
 # Trace columns in display order (subset that exists; missing keys are skipped).
 _TRACE_COLUMNS = [
     "time_ns", "regs_per_thread", "bankconf_st", "bankconf_ld",
-    "smem_wavefronts_st", "smem_wavefronts_ld",
+    "smem_wavefronts_st", "smem_wavefronts_ld", "smem_wavefronts_ldgsts", "ldgsts_inst",
     "spill_ld_sectors", "spill_st_sectors", "tensor_pct", "warp_active_pct",
     "wgmma_serial_ratio",
     "stall_long_sb", "stall_barrier", "stall_mio", "dram_pct",
@@ -361,7 +381,7 @@ def key_metrics(
     metrics = parsed.get(kernel, {})
     launches = launch_count(metrics)
     out: dict[str, float | int | str] = {}
-    for ncu_name, short in KEY_METRICS.items():
+    for ncu_name, short in _PARSED_METRICS.items():
         if ncu_name in metrics:
             v = _coerce(metrics[ncu_name])
             if v is not None:
@@ -529,6 +549,11 @@ _NOTES = {
     "bankconf_ld": "SMEM load bank conflicts",
     "smem_wavefronts_st": "SMEM store wavefront volume",
     "smem_wavefronts_ld": "SMEM load wavefront volume",
+    "smem_wavefronts_ldgsts": (
+        "SMEM wavefronts of cp.async (LDGSTS) fills, sm_120 only (SASS-patched): divide by "
+        "ldgsts_inst -- 4 per LDGSTS at 16 B per lane is conflict-free, more is a fill "
+        "conflict that no bank-conflict counter reports"),
+    "ldgsts_inst": "executed LDGSTS (cp.async) instructions, sm_120 only",
     "smem_wavefronts_vs_ref": (
         "total SMEM wavefronts vs arch ref — a scalar/per-element access path "
         "(the copy atom, NOT the swizzle: switch to STSM/LDSM, vectorized, or "
