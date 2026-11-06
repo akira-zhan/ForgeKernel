@@ -39,6 +39,9 @@ readings were taken.
 | **Trace-time error in a helper** (`PHASE_DYNAMIC_TO_STATIC_BOOL`, `SCOPE_CLOSURE_CAPTURE`, `range_constexpr should be preprocessed`, `TYPE_DYNAMIC_EXPR_UNSUPPORTED`), or a `Constexpr` that works in the shipped entry but not in a probe wrapper, or `module 'cutlass.cute' has no attribute ...` | [`cute_dsl_trace_scope`](cute_dsl_trace_scope.md) (decorator *syntax* is required: `cute.jit(f)` as a call does not rewrite `f`) |
 | **`NameError: name 'x' is not defined` from a name bound inside an `if`**, a compile-time switch whose both branches show up in SASS, `break`/`return` rejected in a region, or `PHASE_DYNAMIC_INDEX` on a Python list/tuple | [`cute_dsl_const_expr_if`](cute_dsl_const_expr_if.md) |
 | **A PTX instruction or modifier the DSL op does not expose** (`.L2::256B`, `cp.async` commit/wait, an unexported `cvt`), or a modifier that "should be there" but is absent from SASS, or no cubin appears in the dump directory | [`ptx_escape`](ptx_escape.md) (rung A before asm; `CUTE_DSL_KEEP=cubin` + an existing dump dir + `CUTE_DSL_NO_CACHE=1`) |
+| **Writing an FP8 (e4m3 / e5m2) mainloop**, or an FP8 kernel's SASS feeds `QMMA` from scalar `LDS.U8`/`LDS.U16`, or `bankconf_ld` is high in a tensor-core loop | [`warp_mma_fp8_ldsm`](warp_mma_fp8_ldsm.md): `MmaFP8Op` (16,8,32) + `LdMatrix8x8x16bOp` x4 from a swizzled K-major tile; expected footprint table |
+| **A PTX/SASS count contract fails while the numerics pass**, or a census shows scalar loads / zero counts you cannot explain | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md): histogram first, family + qualifier, failure form apart, PTX vs SASS, drop `@!PT`, executed vs static counts |
+| **`smem_wavefronts_st` / `bankconf_st` read 0 in a kernel that clearly fills smem** (cp.async / `LDGSTS` supply) | [`smem_traffic_triage`](smem_traffic_triage.md) "The blind spot on sm120": read `sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts` per `LDGSTS` |
 
 ## Interfaces
 
@@ -52,5 +55,7 @@ readings were taken.
 | [`cute_dsl_trace_scope`](cute_dsl_trace_scope.md) | Trace-scope rules of CuTe DSL 4.8.0: `@cute.jit` on every helper with runtime control flow (decorator syntax, not a call), explicit arguments instead of closure capture, Constexpr transcription, API drift, `range_constexpr` needs the preprocessor, no subscript stores through object attributes in staged regions | ✅ |
 | [`cute_dsl_const_expr_if`](cute_dsl_const_expr_if.md) | Compile-time branches: `cutlass.const_expr` folds an `if` into Python so bindings escape; bare `if` is a runtime region whose new names do not escape; folded branches land nothing | ✅ |
 | [`ptx_escape`](ptx_escape.md) | `llvm.inline_asm` inside `@dsl_user_op` (no operands / address operands / a return value), the A -> B -> C expressibility ladder, the SASS footprint check with DSL 4.8.0's artifact switches | ✅ |
+| [`warp_mma_fp8_ldsm`](warp_mma_fp8_ldsm.md) | FP8 `mma.sync` on sm120: cp.async -> swizzled K-major smem -> `ldmatrix` (`LDSM.16.M88.4`) -> `QMMA.16832`; census, swizzle vs linear bank conflicts, the cp.async fill counter blind spot | ✅ |
+| [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) | **Interpretation recipe**: writing PTX/SASS footprint criteria that do not mistake an instrument fault for a kernel defect; sm120 worked example on a `mma.sync` tile | ✅ |
 
 Status: ⬜ TODO / 🟡 draft / ✅ Verified (the example runs on sm_120 and its source is cited).

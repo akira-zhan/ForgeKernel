@@ -36,6 +36,7 @@ readings were taken.
 | **Want to split a register reduction chain into several accumulators / a tree**, or a kernel ported from sm100 relies on `.f32x2` (`FFMA2`) throughput, or bf16 widening (`SHF`/`LOP3`) outnumbers FP in SASS | [`reg_chain_latency_vs_issue`](reg_chain_latency_vs_issue.md): 2 chains cover latency at 1 warp/SMSP, fewest instructions win above; `.f32x2` is two scalar issues; `fma.rn.f32.bf16` |
 | **A probe's or kernel's SASS shows `UFFMA` / `ULOP3` / `USHF` where vector ops were expected** | [`gpu_probe_ladder`](gpu_probe_ladder.md) timing traps; [`reg_chain_latency_vs_issue`](reg_chain_latency_vs_issue.md) gotcha 5 (inputs provably uniform across the warp) |
 | **Not sure which compiled instance actually ran** (grid / cluster / stage count / dynamic smem), a dispatch cache may hand back the wrong executable, or a port from sm100 asks for more than 99 KiB of smem and dies at launch with `cudaErrorInvalidValue` / `invalid argument` | [`launch_identity_stamp`](launch_identity_stamp.md): the kernel stamps its own identity; 101376 B is the per-block ceiling |
+| **`smem_wavefronts_st` / `bankconf_st` read 0 in a kernel that clearly fills smem** (cp.async / `LDGSTS` supply) | [`smem_traffic_triage`](smem_traffic_triage.md) "The blind spot on sm120": read `sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts` per `LDGSTS` |
 
 ## Interfaces
 

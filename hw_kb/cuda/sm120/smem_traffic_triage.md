@@ -48,6 +48,18 @@ Three kernels moving the same useful bytes, counters read through the loop's own
   causes: more instructions at unchanged wavefronts per instruction = extra trips / repeated writes; same instructions
   at more wavefronts per instruction with clean bankconf = wider access pattern than needed.
 
+## The blind spot on sm120: cp.async (`LDGSTS`) fills
+
+The four counters above see `STS` / `STSM` / `LDS` / `LDSM` traffic only. A cp.async fill into smem -- the common supply
+path of sm120 mainloops -- reads **0** in `smem_wavefronts_st` / `bankconf_st`, and also 0 in the hardware counters
+`l1tex__data_pipe_lsu_wavefronts_mem_shared_op_ldgsts` / `l1tex__data_bank_conflicts_pipe_lsu_mem_shared_op_ldgsts` on GB202.
+Only the SASS-patched `sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts` counts it, and even then a
+conflicting fill shows up **only as more wavefronts per `LDGSTS`** (4 when conflict-free at 16 B per lane; 32 when the
+lanes sit 256 B apart), while `sm__sass_l1tex_data_bank_conflicts_pipe_lsu_mem_shared_op_ldgsts` stays 0. So on a cp.async
+kernel the triage has a third row: **fill side -- wavefronts per `LDGSTS` over 4 = fill conflict**; lever: the thread ->
+smem mapping of the G2S tiled copy (or the destination swizzle). See the cutedsl tree's `warp_mma_fp8_ldsm` gotcha 3
+(probe `probes/sm120/mechanisms/warp_mma_fp8_ldsm_check.py`, `PROBE PASS warp-mma-fp8-ldsm contracts=17`).
+
 ## Requirements on the milestone (the template A.5 clause "two branches for smem-traffic health criteria")
 
 Whenever an `smem_wavefronts`/`bankconf` criterion is set, the causal table must give a lever for each of the two branches; missing one makes it
@@ -58,6 +70,7 @@ a hundred times the reference's while the criterion watched only the write side 
 
 ## Sources
 
+- This repo's GPU certification on sm120 (the cp.async blind spot): `probes/sm120/mechanisms/warp_mma_fp8_ldsm_check.py` -- `PROBE PASS warp-mma-fp8-ldsm contracts=17` (`N-ldgsts-blind-hw-counters`, `N-linfill-fill-wavefronts`, `N-ldgsts-conflict-counter-blind`).
 - This repo's GPU certification on sm120: `probes/sm120/methodology/smem_triage_check.py` (+ `smem_triage.cu`) --
   `PROBE PASS smem-triage contracts=4` (`S-executed-shape`, `M-metrics-exist`, `T-conflict-quadrant`, `T-volume-quadrant`).
 - Nsight Compute Kernel Profiling Guide (l1tex shared-memory wavefront and bank-conflict metrics):
