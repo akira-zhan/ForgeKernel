@@ -588,6 +588,22 @@ def resolve_addr(instrs, regions: List[Region], site_idx: int,
                 f"{base[0]}{base[1]}+0x{offset:x}#r{reg.rid}",
                 " <- ".join(trail) + " [PRMT address splice — likely "
                 "remote-CTA/cluster target]")
+        if f in ("LEA", "ULEA") and ".HI" not in ins.opcode:
+            # LEA d, a, b, sh = (a << sh) + b: the shifted operand is the window
+            # high part (on smem addresses: S2UR SR_CgaCtaId << 0x18), the offset
+            # lives in the addend b. Follow b by position: following "cur itself"
+            # made the result depend on ptxas's register choice -- ULEA UR21, UR5,
+            # UR21, 0x18 resolved (UR21 is the addend) while ULEA UR4, UR4, UR5,
+            # 0x18 chased SR_CgaCtaId and left every mbarrier of an sm120 TMA
+            # kernel UNRESOLVED.
+            ops = [o.strip() for o in ins.operands.rstrip(" ;").split(",")]
+            m_add = re.fullmatch(r"(U?R)(\d+)", ops[2]) if len(ops) >= 3 else None
+            if m_add:
+                cur = (m_add.group(1), int(m_add.group(2)))   # same (kind, number) form as _REG
+                continue
+            if _follow(srcs):
+                continue
+            break
         if f in ("LEA", "ULEA", "SHF", "USHF", "MOV", "UMOV", "R2UR",
                  "UR2R"):
             if _follow(srcs):

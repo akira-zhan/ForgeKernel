@@ -199,3 +199,21 @@ def test_pipeline_loop_is_one_mma_consumer_with_a_cache_op_anchor():
     d = OT.summarize(_page(PIPE3))
     assert d["loops"] == {"mma-consumer": 1}
     assert d["cache_ops"] == ["LDGSTS.E.BYPASS.LTC128B.128"]
+
+
+# --- TMA + mbarrier mainloops (PipelineTmaAsync, CuTe DSL, sm_120a) --------------------------------
+
+def test_mbarrier_addresses_resolve_through_the_lea_addend():
+    """``ULEA UR4, UR4, UR5, 0x18`` = (SR_CgaCtaId << 24) + UR5: the offset is the ADDEND. Chasing the
+    destination-named operand followed SR_CgaCtaId and left every mbarrier of this page UNRESOLVED
+    (mbar_objs 0); following the addend resolves full + empty for each of the 3 stages."""
+    for name in ("tma_mbarrier_fp8_ws", "tma_mbarrier_fp8_inline"):
+        d = OT.summarize(_page(name))
+        assert d["mbar_objs"] == 6 and d["mbar_tiers"] == {"CONST": 6}, name
+    edges = [tuple(e) for e in OT.summarize(_page("tma_mbarrier_fp8_ws"))["edges"]]
+    assert ("copy-producer", "mma-consumer") in edges and ("mma-consumer", "copy-producer") in edges
+
+
+def test_tma_mainloop_cache_op_anchor_is_the_tma_load():
+    for name in ("tma_mbarrier_fp8_ws", "tma_mbarrier_fp8_inline"):
+        assert OT.summarize(_page(name))["cache_ops"] == ["UTMALDG.2D"]
