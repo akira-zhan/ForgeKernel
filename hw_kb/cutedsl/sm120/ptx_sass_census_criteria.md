@@ -3,7 +3,7 @@
 > **Certification source: the sm90 tree · re-checked on sm120** for §1-§4, gotchas 1-3, 10 and the new sm120 gotchas 17-20
 > on an FP8 `mma.sync` + `ldmatrix` + cp.async tile (`probes/sm120/mechanisms/warp_mma_fp8_ldsm_check.py`,
 > `PROBE PASS warp-mma-fp8-ldsm contracts=17`; worked example in §7), and gotcha 11 + new gotchas 21-22 on a cp.async
-> multistage mainloop (`probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=14`). Gotchas 4-9 are transcribed method (their readings
+> multistage mainloop (`probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=19`). Gotchas 4-9 are transcribed method (their readings
 > were taken on sm90 barrier / conversion probes); gotchas 11-16 read the orchestration dossier axes
 > (`commit` / `supply` / `rings` / `cache_ops` / `nbar_*`) on sm90 TMA + wgmma kernels and are **not re-checked on sm120**.
 >
@@ -444,6 +444,6 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
   `N-ldgsts-blind-hw-counters`, `N-linfill-fill-wavefronts`, `N-ldgsts-conflict-counter-blind`). Gotcha 18:
   `probes/sm120/methodology/smem_triage_check.py` (`PROBE PASS smem-triage contracts=4`, the executed-count contract
   that replaced a static one). Gotcha 20: `tests/test_sm120_sass.py` (`test_operand_census_skips_rather_than_fails_on_mma_sync`).
-- Gotchas 21, 22: `probes/sm120/mechanisms/cpasync_multistage_check.py` -- `PROBE PASS cpasync-multistage contracts=14`
+- Gotchas 21, 22: `probes/sm120/mechanisms/cpasync_multistage_check.py` -- `PROBE PASS cpasync-multistage contracts=19`
   (`orch-commit-s2`, `orch-commit-s3`, `sass-wait-depth-s2`, `sass-wait-depth-s3`); `tests/test_sm120_sass.py`
   (`test_short_mma_sync_page_is_not_below_the_floor`, `test_commit_axis_reads_the_cp_async_wait_depth`).

@@ -19,7 +19,12 @@ Contracts:
   ``CPWAIT {LE 0x<S-2> x1}`` (the 2- and 3-stage pages differ there and nowhere else on that axis);
 - ``ncu-occupancy``          : (ncu) 128 B rows x 3 stages are limited to 1 CTA / SM by shared memory, 64 B rows x 3
   stages to 2 (``launch__occupancy_limit_shared_mem``), and the 64 B variant achieves ~2x the active warps.
-Facts: TFLOPS per configuration (median of 20 launches, unlocked clocks), occupancy readings.
+- ``numerics-shape-*``       : e4m3, 64 B rows, 2 stages, bit-exact for CTA 128 x 128 / 4 warps, 128 x 64 / 4 warps,
+  128 x 128 / 8 warps and 128 x 128 / 4 warps with ``min_blocks_per_mp=3``;
+- ``ncu-register-cap-spills`` : (ncu) at 64 B rows x 2 stages shared memory admits 3 CTA / SM but registers (198 / thread)
+  only 2; ``min_blocks_per_mp=3`` brings registers to <= 170 and the register limit to 3, and the kernel spills
+  (local-load sectors 0 -> > 0) and executes more instructions.
+Facts: TFLOPS per configuration and per shape (median of 20 launches, unlocked clocks), NCU readings.
 """
 import glob
 import json
@@ -49,8 +54,10 @@ def build():
     class PipeGemm:
         """C (fp32) = A . B^T, A (M,K) / B (N,K) K-major; cp.async multistage -> ldmatrix -> mma.sync."""
 
-        def __init__(self, dtype_name, stages, row_bytes=128, warps=(2, 2)):
+        def __init__(self, dtype_name, stages, row_bytes=128, tile=(128, 128), warps=(2, 2), min_blocks=0):
             self.dtype_name, self.stages, self.warps = dtype_name, stages, warps
+            self.BM, self.BN = tile
+            self.min_blocks = min_blocks
             self.row_bytes = row_bytes                             # bytes of K per smem row per stage
 
         @cute.jit
@@ -67,11 +74,12 @@ def build():
                 perm = (self.warps[0] * 16, self.warps[1] * 16, 16)
             tiled_mma = cute.make_tiled_mma(mma_op, cute.make_layout((self.warps[0], self.warps[1], 1)),
                                             permutation_mnk=perm)
-            sA_l = hh.make_smem_layout_a(LayoutEnum.from_tensor(mA), (BM, BN, bk), dt, self.stages)
-            sB_l = hh.make_smem_layout_b(LayoutEnum.from_tensor(mB), (BM, BN, bk), dt, self.stages)
+            sA_l = hh.make_smem_layout_a(LayoutEnum.from_tensor(mA), (self.BM, self.BN, bk), dt, self.stages)
+            sB_l = hh.make_smem_layout_b(LayoutEnum.from_tensor(mB), (self.BM, self.BN, bk), dt, self.stages)
             nthr = self.warps[0] * self.warps[1] * 32
-            grid = [cute.size(mA, mode=[0]) // BM, cute.size(mB, mode=[0]) // BN, 1]
-            self.kernel(mA, mB, mC, tiled_mma, sA_l, sB_l, bk).launch(grid=grid, block=[nthr, 1, 1])
+            grid = [cute.size(mA, mode=[0]) // self.BM, cute.size(mB, mode=[0]) // self.BN, 1]
+            self.kernel(mA, mB, mC, tiled_mma, sA_l, sB_l, bk).launch(grid=grid, block=[nthr, 1, 1],
+                                                                      min_blocks_per_mp=self.min_blocks)
 
         @cute.kernel
         def kernel(self, mA: cute.Tensor, mB: cute.Tensor, mC: cute.Tensor, tiled_mma: cute.TiledMma,
@@ -84,9 +92,9 @@ def build():
             smem = SmemAllocator()
             sA = smem.allocate_tensor(dt, sA_l, byte_alignment=1024)
             sB = smem.allocate_tensor(dt, sB_l, byte_alignment=1024)
-            gA = cute.local_tile(mA, (BM, bk), (bidx, None))      # (BM, bk, k_tiles)
-            gB = cute.local_tile(mB, (BN, bk), (bidy, None))
-            gC = cute.local_tile(mC, (BM, BN), (bidx, bidy))
+            gA = cute.local_tile(mA, (self.BM, bk), (bidx, None))      # (BM, bk, k_tiles)
+            gB = cute.local_tile(mB, (self.BN, bk), (bidy, None))
+            gC = cute.local_tile(mC, (self.BM, self.BN), (bidx, bidy))
             k_tiles = cute.size(gA, mode=[2])
             # gmem -> smem: 16 B per thread per copy, 8 threads per 128 B row
             g2s = cute.make_copy_atom(cute.nvgpu.cpasync.CopyG2SOp(cache_mode=cute.nvgpu.cpasync.LoadCacheMode.GLOBAL),
@@ -104,7 +112,7 @@ def build():
             tCsB = thr_mma.partition_B(sB[None, None, 0])
             tCrA = tiled_mma.make_fragment_A(tCsA)
             tCrB = tiled_mma.make_fragment_B(tCsB)
-            acc = cute.make_rmem_tensor(thr_mma.partition_shape_C((BM, BN)), cutlass.Float32)
+            acc = cute.make_rmem_tensor(thr_mma.partition_shape_C((self.BM, self.BN)), cutlass.Float32)
             acc.fill(0.0)
             ldsm = cute.make_copy_atom(cute.nvgpu.warp.LdMatrix8x8x16bOp(transpose=False, num_matrices=4), dt)
             cpA = cute.make_tiled_copy_A(ldsm, tiled_mma)
@@ -143,7 +151,8 @@ def build():
     return PipeGemm
 
 
-def run_cfg(dt, stages, row_bytes, reps=20, check=True, M=4096, N=4096, K=4096):
+def run_cfg(dt, stages, row_bytes, reps=20, check=True, M=4096, N=4096, K=4096, tile=(128, 128), warps=(2, 2),
+            min_blocks=0):
     import torch
     import cutlass.cute as cute
     from cutlass.cute.runtime import from_dlpack
@@ -154,7 +163,7 @@ def run_cfg(dt, stages, row_bytes, reps=20, check=True, M=4096, N=4096, K=4096):
     tdt = torch.float8_e4m3fn if dt == "fp8" else torch.bfloat16
     c = torch.zeros(M, N, device="cuda")
     ts = [from_dlpack(t, assumed_align=16) for t in (a32.to(tdt), b32.to(tdt), c)]
-    f = cute.compile(PipeGemm(dt, stages, row_bytes), *ts)
+    f = cute.compile(PipeGemm(dt, stages, row_bytes, tile, warps, min_blocks), *ts)
     f(*ts)
     torch.cuda.synchronize()
     md = float((c - a32 @ b32.T).abs().max()) if check else float("nan")
@@ -206,25 +215,49 @@ def stage_sass():
 
 
 def stage_target():
-    run_cfg(os.environ["FK_DT"], int(os.environ["FK_STAGES"]), int(os.environ["FK_ROW"]), reps=1, check=False)
+    run_cfg(os.environ["FK_DT"], int(os.environ["FK_STAGES"]), int(os.environ["FK_ROW"]), reps=1, check=False,
+            tile=tuple(int(x) for x in os.environ.get("FK_TILE", "128,128").split(",")),
+            warps=tuple(int(x) for x in os.environ.get("FK_WARPS", "2,2").split(",")),
+            min_blocks=int(os.environ.get("FK_MINBLK", "0")))
+
+
+SHAPES = [((128, 128), (2, 2), 0), ((128, 64), (2, 2), 0), ((128, 128), (2, 4), 0), ((128, 128), (2, 2), 3)]
+
+
+def stage_shapes():
+    """e4m3, 64 B rows, 2 stages: warp-tile / warp-count / register-cap variants (numerics + timing facts)."""
+    for tile, warps, mb in SHAPES:
+        md, ms, tf = run_cfg("fp8", 2, 64, tile=tile, warps=warps, min_blocks=mb)
+        n(f"fp8 rows=64B stages=2 tile={tile} warps={warps} min_blocks={mb}: {ms:.3f} ms, {tf:.1f} TFLOPS")
+        v(f"numerics-shape-{tile[0]}x{tile[1]}-w{warps[0]}x{warps[1]}-mb{mb}", md == 0.0, f"max_diff={md}")
+
+
+def _ncu(env_extra, mets):
+    env = dict(os.environ, CUTE_DSL_ARCH="sm_120a", CUTE_DSL_CACHE_DIR=tempfile.mkdtemp(prefix="fk_pipe_ncu_"),
+               **env_extra)
+    p = subprocess.run(["ncu", "--csv", "--kernel-name", "regex:PipeGemm", "--launch-skip", "1", "--launch-count", "1",
+                        "--metrics", ",".join(mets), sys.executable, "-u", HERE, "target"],
+                       env=env, capture_output=True, text=True, timeout=900)
+    vals = {}
+    for line in p.stdout.splitlines():
+        m = re.match(r'"[^"]*",.*"([a-z0-9_]+__[a-z0-9_.]+)","[^"]*","([^"]*)"$', line)
+        if m:
+            vals[m.group(1)] = float(m.group(2).replace(",", ""))
+    return vals
+
+
+OCC = ["launch__occupancy_limit_shared_mem", "launch__occupancy_limit_registers", "launch__registers_per_thread",
+       "sm__warps_active.avg.per_cycle_active", "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
+       "l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum", "l1tex__t_sectors_pipe_lsu_mem_local_op_st.sum",
+       "smsp__inst_executed.sum"]
 
 
 def ncu_occupancy():
-    mets = "launch__occupancy_limit_shared_mem,launch__occupancy_limit_registers,sm__warps_active.avg.per_cycle_active,sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed"
+    out = []
     got = {}
     for row in (128, 64):
-        env = dict(os.environ, FK_DT="fp8", FK_STAGES="3", FK_ROW=str(row), CUTE_DSL_ARCH="sm_120a",
-                   CUTE_DSL_CACHE_DIR=tempfile.mkdtemp(prefix="fk_pipe_ncu_"))
-        p = subprocess.run(["ncu", "--csv", "--kernel-name", "regex:PipeGemm", "--launch-skip", "1", "--launch-count", "1",
-                            "--metrics", mets, sys.executable, "-u", HERE, "target"],
-                           env=env, capture_output=True, text=True, timeout=900)
-        vals = {}
-        for line in p.stdout.splitlines():
-            m = re.match(r'"[^"]*",.*"([a-z_]+__[a-z_.]+)","[^"]*","([^"]*)"$', line)
-            if m:
-                vals[m.group(1)] = float(m.group(2).replace(",", ""))
-        got[row] = vals
-        print(f"FACT ncu fp8 rows={row}B stages=3: {json.dumps(vals)}", flush=True)
+        got[row] = _ncu({"FK_DT": "fp8", "FK_STAGES": "3", "FK_ROW": str(row)}, OCC)
+        print(f"FACT ncu fp8 rows={row}B stages=3: {json.dumps(got[row])}", flush=True)
     try:
         ok = (got[128]["launch__occupancy_limit_shared_mem"] == 1 and got[64]["launch__occupancy_limit_shared_mem"] == 2
               and got[64]["sm__warps_active.avg.per_cycle_active"] > 1.8 * got[128]["sm__warps_active.avg.per_cycle_active"])
@@ -233,10 +266,30 @@ def ncu_occupancy():
               f"{got[128]['sm__warps_active.avg.per_cycle_active']:.2f} -> {got[64]['sm__warps_active.avg.per_cycle_active']:.2f}")
     except KeyError as e:
         ok, md = False, f"missing {e}"
-    return [("ncu-occupancy", ok, md)]
+    out.append(("ncu-occupancy", ok, md))
+    # the register cap: 2 stages x 64 B rows fit 3 CTAs by smem; min_blocks_per_mp=3 forces <= 170 registers
+    rc = {mb: _ncu({"FK_DT": "fp8", "FK_STAGES": "2", "FK_ROW": "64", "FK_MINBLK": str(mb)}, OCC) for mb in (0, 3)}
+    for mb in (0, 3):
+        print(f"FACT ncu fp8 rows=64B stages=2 min_blocks={mb}: {json.dumps(rc[mb])}", flush=True)
+    try:
+        a, b = rc[0], rc[3]
+        ok = (a["launch__occupancy_limit_registers"] == 2 and a["launch__occupancy_limit_shared_mem"] == 3
+              and a["l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum"] == 0
+              and b["launch__registers_per_thread"] <= 170 and b["launch__occupancy_limit_registers"] >= 3
+              and b["l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum"] > 0
+              and b["smsp__inst_executed.sum"] > a["smsp__inst_executed.sum"])
+        md = (f"registers {a['launch__registers_per_thread']:.0f} -> {b['launch__registers_per_thread']:.0f}, CTA/SM by "
+              f"registers {a['launch__occupancy_limit_registers']:.0f} -> {b['launch__occupancy_limit_registers']:.0f}, "
+              f"local ld sectors 0 -> {b['l1tex__t_sectors_pipe_lsu_mem_local_op_ld.sum']:.0f}, instructions "
+              f"x{b['smsp__inst_executed.sum'] / a['smsp__inst_executed.sum']:.2f}")
+    except KeyError as e:
+        ok, md = False, f"missing {e}"
+    out.append(("ncu-register-cap-spills", ok, md))
+    return out
 
 
-STAGES = {"numerics": stage_numerics, "ceiling": stage_ceiling, "sass": stage_sass, "target": stage_target}
+STAGES = {"numerics": stage_numerics, "ceiling": stage_ceiling, "sass": stage_sass, "target": stage_target,
+          "shapes": stage_shapes}
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
@@ -244,7 +297,8 @@ if __name__ == "__main__":
         sys.exit(0)
     root = tempfile.mkdtemp(prefix="fk_pipe_")
     plan = [("numerics", [f"numerics-{dt}-r{row}-s{s}" for dt, row, s in CFGS], None),
-            ("ceiling", ["smem-ceiling"], None)]
+            ("ceiling", ["smem-ceiling"], None),
+            ("shapes", [f"numerics-shape-{t[0]}x{t[1]}-w{w[0]}x{w[1]}-mb{mb}" for t, w, mb in SHAPES], None)]
     for s in (2, 3):
         d = os.path.join(root, f"s{s}")
         os.makedirs(d)
@@ -254,7 +308,7 @@ if __name__ == "__main__":
     occ = ncu_occupancy()
     for tag, ok, md in occ:
         print(f"PROBE {'PASS' if ok else 'FAIL'} {tag} ({md})")
-    n_core = len(CFGS) + 1 + 4
+    n_core = len(CFGS) + 1 + len(SHAPES) + 4
     all_ok = rc == 0 and all(ok for _, ok, _ in occ)
     print(f"PROBE {'PASS' if all_ok else 'FAIL'} cpasync-multistage contracts={n_core + len(occ)}")
     sys.exit(0 if all_ok else 1)

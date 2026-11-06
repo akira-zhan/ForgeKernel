@@ -2,12 +2,13 @@
 
 > One entry per hardware interface. Operator-agnostic; mechanism only.
 >
-> **Status**: ✅ Verified (GPU probe `probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=14`,
+> **Status**: ✅ Verified (GPU probe `probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=19`,
 > RTX PRO 5000, CuTe DSL 4.8.0): a 4096^3 GEMM, bf16 and e4m3, 128 B and 64 B of K per smem row, 2 and 3 stages -- all eight
 > bit-exact (`max_diff=0.0`); 128 B rows x 4 stages (128 KiB) refused at launch; SASS: the loop carries exactly one
 > `DEPBAR.LE SB0, 0x<S-2>` and the page S `LDGDEPBAR`; the orchestration dossier reads one mma-consumer loop with
 > commit axis `CPWAIT {LE 0x<S-2> x1}`; NCU: the shared-memory occupancy limit goes 1 -> 2 CTA / SM when the stage
-> footprint halves, active warps 4.00 -> 7.78.
+> footprint halves, active warps 4.00 -> 7.81; four more tile / warp / register-cap shapes bit-exact, and forcing a third
+> CTA per SM with `min_blocks_per_mp=3` caps registers at 168 and spills (local-load sectors 0 -> 16.8 M, instructions x1.20).
 >
 > **What is certified**: numerics, the wait-depth footprint and the occupancy readings. The TFLOPS table is INFO
 > (median of 20 launches per configuration, clocks unlocked, same run), no significance test.
@@ -92,8 +93,27 @@ How to read it:
   loop; 8 warps per CTA (2 x 4 or 4 x 2 warp grid, smaller warp tiles) -- 5-12 % slower than the 4-warp 64 B-row
   configuration; 32 B of K per row -- 19 % (bf16) / 22 % (e4m3) slower (a `__syncthreads` per K tile amortised over half
   the MMAs).
-- The next limit at this tile is registers (2 CTA / SM): a 64 x 64 fp32 accumulator per warp is 128 registers per
-  thread before fragments.
+- The next limit at this tile is registers (2 CTA / SM, 198 per thread): a 64 x 64 fp32 accumulator per warp is 128
+  registers per thread before fragments. **Pulling that lever does not pay** -- see the next table.
+
+### The register lever, measured (e4m3, 64 B rows, 2 stages: shared memory admits 3 CTA / SM)
+
+| CTA tile / warps (warp tile) | registers / thread | CTA / SM (regs, smem) | active warps / SM | TFLOPS |
+|---|---|---|---|---|
+| 128 x 128 / 4 (64 x 64) | 198 | 2, 3 | 7.8 | **454** |
+| 128 x 64 / 4 (64 x 32) | 128 | 4, 4 | -- | 433 |
+| 128 x 128 / 8 (64 x 32) | 114 | 2, 3 | 15.3 (3-stage run) | 427 |
+| 128 x 128 / 4, `min_blocks_per_mp=3` | 168 | 3, 3 | 11.2 | 417 (spills: 16.8 M local-load sectors, x1.20 instructions) |
+
+- Every way of buying more warps cost more than it bought: a smaller warp tile issues more `LDSM` and address math per
+  `mma.sync` (less fragment reuse), and capping registers at 64 x 64 makes ptxas spill the accumulators.
+- `min_blocks_per_mp=N` on `launch(...)` is the CuTe DSL spelling of `__launch_bounds__(threads, N)` (it lowers to
+  `nvvm.minctasm`); it does what it says -- registers <= 65536 / (N x threads) -- and the spills it causes are visible
+  only in `spill_ld_sectors` / `spill_st_sectors`, not in the numerics.
+- At this tile the mainloop is ~84 % tensor-pipe busy with 53 % of its executed instructions being `QMMA` (16.8 M of
+  31.8 M, `smsp__inst_executed_pipe_tensor.sum`, an NCU reading taken beside the probe, not a contract); the rest is
+  `LDSM`, `LDGSTS`, address arithmetic and the per-tile barrier. Going further needs a different structure (the copy
+  and its address math off the MMA warps), not more warps of the same loop.
 
 ## Gotchas
 
@@ -130,5 +150,8 @@ How to read it:
   `cute.arch.cp_async_commit_group`, `cute.arch.cp_async_wait_group`, `cute.arch.sync_threads`, `cutlass.range`,
   `cute.nvgpu.warp.MmaF16BF16Op`, `cute.nvgpu.warp.MmaFP8Op`, `cute.nvgpu.warp.LdMatrix8x8x16bOp`,
   `cutlass.utils.hopper_helpers.make_smem_layout_a` / `make_smem_layout_b`.
-- GPU probe `probes/sm120/mechanisms/cpasync_multistage_check.py`: `PROBE PASS cpasync-multistage contracts=14`
-  (`numerics-{bf16,fp8}-r{128,64}-s{2,3}`, `smem-ceiling`, `sass-wait-depth-s{2,3}`, `orch-commit-s{2,3}`, `ncu-occupancy`).
+- GPU probe `probes/sm120/mechanisms/cpasync_multistage_check.py`: `PROBE PASS cpasync-multistage contracts=19`
+  (`numerics-{bf16,fp8}-r{128,64}-s{2,3}`, `smem-ceiling`, `numerics-shape-*` x4, `sass-wait-depth-s{2,3}`,
+  `orch-commit-s{2,3}`, `ncu-occupancy`, `ncu-register-cap-spills`).
+- CuTe DSL launch option `min_blocks_per_mp` (`LaunchConfig`, lowered to `nvvm.minctasm`); PTX ISA performance-tuning
+  directive `.minnctapersm`.
