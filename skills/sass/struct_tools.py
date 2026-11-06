@@ -445,7 +445,7 @@ def self_check(table: List[dict], parsed: sass_tools.ParseResult,
     problems: List[str] = []
     if parsed.errors:
         problems.append(f"{len(parsed.errors)} profiler error/warning line(s) in the stream")
-    if len(parsed.instructions) < MIN_INSTRUCTIONS:
+    if sass_tools.below_floor(parsed.instructions, MIN_INSTRUCTIONS):
         problems.append(f"only {len(parsed.instructions)} instructions (< {MIN_INSTRUCTIONS})")
     if not have_counts:
         problems.append("no per-PC execution counts — collect the source page as CSV "

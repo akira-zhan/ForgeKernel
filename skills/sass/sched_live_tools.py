@@ -873,7 +873,7 @@ def report(sass_text: str, out=print) -> Tuple[bool, bool]:
     instrs = list(res.instructions)
     out(f"[parse] {len(instrs)} instructions, unparsed={res.unparsed}, "
         f"noise={len(res.errors)}")
-    if len(instrs) < _st.MIN_INSTRUCTIONS:
+    if _st.below_floor(instrs):
         _st.dump_raw(sass_text)
         out("SCHED-FAIL too-few-instructions")
         out("LIVE-FAIL too-few-instructions")

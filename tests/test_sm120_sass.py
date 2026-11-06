@@ -164,3 +164,38 @@ def test_struct_reads_a_named_barrier_qmma_construction():
     assert "QMMA.16832.F32.E4M3.E4M3 x1@4w" in text and "STS x1@4w" in text
     assert "LDS x4@4w" in text
     assert any(line.startswith("STRUCT-OK") for line in lines)
+
+
+# --- compact mma.sync mainloops (cp.async multistage, CuTe DSL, sm_120a) ------------------------
+
+PIPE2 = "cpasync_pipeline_fp8_2stage"
+PIPE3 = "cpasync_pipeline_fp8_3stage"
+
+
+def test_short_mma_sync_page_is_not_below_the_floor():
+    """A cp.async -> ldmatrix -> QMMA tile at two CTAs per SM is ~350 instructions: under the
+    sm90 floor of 500, yet the tensor kernel. A short page with no MMA family stays rejected."""
+    instrs = _instrs(PIPE2)
+    assert len(instrs) < sass_tools.MIN_INSTRUCTIONS
+    assert not sass_tools.below_floor(instrs)
+    bystander = [i for i in instrs if i.opcode.split(".", 1)[0] not in sass_tools.SM120_MMA_SYNC_FAMILIES]
+    assert sass_tools.below_floor(bystander)
+    assert sass_tools.below_floor(instrs[:sass_tools.MIN_MMA_SYNC_INSTRUCTIONS - 2]
+                                  + [i for i in instrs if i.opcode.startswith("QMMA")][:1])   # a stub
+    assert OT.summarize(_page(PIPE2)) is not None
+    ok_sched, ok_live = SL.report(_page(PIPE2), out=lambda *_: None)
+    assert ok_sched and ok_live
+
+
+def test_commit_axis_reads_the_cp_async_wait_depth():
+    """2 vs 3 stages differ only in cp.async.wait_group N -> DEPBAR.LE SB0, N."""
+    c2, c3 = OT.summarize(_page(PIPE2))["commit"], OT.summarize(_page(PIPE3))["commit"]
+    assert c2 == ["mma-consumer: DEPBAR {} LDGDEPBAR x1 CPWAIT {LE 0x0 x1}"]
+    assert c3 == ["mma-consumer: DEPBAR {} LDGDEPBAR x1 CPWAIT {LE 0x1 x1}"]
+    assert OT.summarize(_page(CPASYNC))["commit"] == ["mma-consumer: DEPBAR {} LDGDEPBAR x1 CPWAIT {LE 0x2 x1}"]
+
+
+def test_pipeline_loop_is_one_mma_consumer_with_a_cache_op_anchor():
+    d = OT.summarize(_page(PIPE3))
+    assert d["loops"] == {"mma-consumer": 1}
+    assert d["cache_ops"] == ["LDGSTS.E.BYPASS.LTC128B.128"]

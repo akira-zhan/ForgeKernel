@@ -788,23 +788,38 @@ def cache_policy(instrs) -> Counter:
 
 
 def commit_groups(instrs, regions: List[Region]) -> List[str]:
-    """In-flight depth per loop: DEPBAR immediates and LDGDEPBAR counts."""
+    """In-flight depth per loop: DEPBAR immediates and LDGDEPBAR counts.
+
+    ``DEPBAR`` is the wgmma group wait (``WARPGROUP.DEPBAR.LE gsb0, N``); ``CPWAIT`` is a
+    cp.async-family group wait on scoreboard SB0 (``DEPBAR.LE SB0, N``): the
+    ``cp.async.wait_group N`` of an LDGSTS multistage pipeline (with LDGDEPBAR commits in
+    the same loop) -- an sm120 mainloop with 2 vs 3 stages differs only there (``0x0`` vs
+    ``0x1``) -- or a bulk / TMA-store ``cp.async.bulk.wait_group`` (after UTMASTG +
+    UTMACMDFLUSH, no LDGDEPBAR). Printed only when present, so a page without SB0 waits
+    reads exactly as before."""
     lines = []
     for reg in regions:
         if reg.kind != "loop":
             continue
         depths = Counter()
+        cpwait = Counter()
         ldgdep = 0
         for ins in instrs[reg.lo:reg.hi + 1]:
             if fam_of(ins.opcode) == "WARPGROUP" and "DEPBAR" in ins.opcode:
                 imms = _HEX.findall(ins.operands)
                 depths[imms[-1] if imms else "?"] += 1
+            elif fam_of(ins.opcode) == "DEPBAR" and re.match(r"\s*SB0\b", ins.operands):
+                imms = _HEX.findall(ins.operands)
+                cpwait[imms[-1] if imms else "?"] += 1
             elif fam_of(ins.opcode) == "LDGDEPBAR":
                 ldgdep += 1
-        if depths or ldgdep:
+        if depths or ldgdep or cpwait:
             d = ", ".join(f"LE {k} x{v}" for k, v in sorted(depths.items()))
-            lines.append(f"r{reg.rid}({reg.label}): DEPBAR {{{d}}} "
-                         f"LDGDEPBAR x{ldgdep}")
+            line = f"r{reg.rid}({reg.label}): DEPBAR {{{d}}} LDGDEPBAR x{ldgdep}"
+            if cpwait:
+                c = ", ".join(f"LE {k} x{v}" for k, v in sorted(cpwait.items()))
+                line += f" CPWAIT {{{c}}}"
+            lines.append(line)
     return lines
 
 
@@ -898,7 +913,7 @@ def build_dossier(sass_text: str, launch: Optional[int] = None, kernel: str = ""
     sass_text, n_launches, used = select_launch(sass_text, launch, kernel)
     res = _st.parse_sass(sass_text)
     instrs = list(res.instructions)
-    if len(instrs) < _st.MIN_INSTRUCTIONS:
+    if _st.below_floor(instrs):
         return None
     regions = find_regions(instrs)
     mb = mbarrier_sites(instrs, regions, pred_addrs(sass_text))

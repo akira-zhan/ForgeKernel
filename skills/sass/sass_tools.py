@@ -38,6 +38,10 @@ from typing import Iterable, List, NamedTuple, Optional, Sequence, Tuple
 # A real sm90 tensor kernel disassembles to thousands of lines; the RNG kernel that
 # probe2 mistook for one had 400. The floor sits between those clusters.
 MIN_INSTRUCTIONS = 500
+# The lower floor for a page that issues an mma.sync family (see ``below_floor``): the most
+# compact sm120 cp.async -> ldmatrix -> QMMA mainloop measured is ~350 instructions; a
+# handful-of-lines stub that merely contains an HMMA is still not a kernel to read.
+MIN_MMA_SYNC_INSTRUCTIONS = 200
 
 # Families whose presence separates a Hopper tensor kernel from bystanders. BAR is
 # deliberately absent: every kernel has BAR.SYNC (the RNG kernel had exactly one),
@@ -130,6 +134,21 @@ def family_counts(instructions: Iterable[Instr],
     return counts
 
 
+def below_floor(instructions: Sequence[Instr], min_instructions: int = MIN_INSTRUCTIONS) -> bool:
+    """Is this page too short to be the tensor kernel?
+
+    The floor separates sm90 tensor kernels (thousands of lines) from bystanders (an
+    RNG kernel: ~400 lines, no tensor family). An sm120 ``mma.sync`` mainloop is
+    compact -- a cp.async -> ldmatrix -> QMMA CTA tile at two CTAs per SM disassembles
+    to ~350 instructions -- so a page under the floor that ISSUES an mma.sync family
+    (HMMA / QMMA / OMMA / IMMA) is still the tensor kernel, not a bystander."""
+    if len(instructions) >= min_instructions:
+        return False
+    if len(instructions) < MIN_MMA_SYNC_INSTRUCTIONS:
+        return True                       # a stub with an MMA in it is still not a mainloop
+    return not family_counts(instructions, SM120_MMA_SYNC_FAMILIES)
+
+
 def pick_kernel(pairs: Sequence[Tuple[str, float]]) -> Tuple[str, float]:
     """The kernel under study is the one that dominates *time*, never the one that
     launched first — the first launch is routinely ``torch.randn``'s RNG kernel.
@@ -167,7 +186,7 @@ def self_check(profiled_kernel: str,
     if not parsed.instructions:
         problems.append(
             "parsed 0 instructions — the parser, not the kernel, is the story")
-    elif len(parsed.instructions) < min_instructions:
+    elif below_floor(parsed.instructions, min_instructions):
         problems.append(
             f"only {len(parsed.instructions)} instructions (< {min_instructions}) — "
             f"a real tensor kernel is thousands; this smells like a helper kernel")
