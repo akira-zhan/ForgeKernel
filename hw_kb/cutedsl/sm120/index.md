@@ -23,6 +23,22 @@ form). Readings and conclusions in `sm90/` and `sm100/` were taken on other hard
 entry transcribed from another tree carries a `Certification source` line saying where its
 readings were taken.
 
+### Before borrowing anything from `sm90/` or `sm100/`: classify it
+
+A helper, a pipeline pattern, a layout or a reading taken from another tree is placed in one of three classes
+**before** it is used, and an entry that uses it says which (a "native vs borrowed" table, as in
+[`blockscaled_mma`](blockscaled_mma.md)). Checking that the instruction exists is not enough: both faults of the
+block-scaled mainloop came from borrowed usages whose instructions all exist on sm120.
+
+| Class | What to do | Known members (evidence) |
+|---|---|---|
+| **Absent on sm120** | do not port; find the sm120 mechanism | wgmma (SM90) and tcgen05 / TMEM / UMMA / `cta_group::2` (SM100): ptxas rejects them for `sm_120a` (checked while measuring the device facts, not a probe contract); packed `.f32x2` compiles but runs as two scalar ops ([`reg_chain_latency_vs_issue`](reg_chain_latency_vs_issue.md)); more than 101376 B of smem per block ([`launch_identity_stamp`](launch_identity_stamp.md) gotcha 8) |
+| **Present on sm120, but the borrowed usage carries an assumption of its home architecture** | check the assumption, not only the instruction | `PipelineTmaAsync` released without a proxy fence: right for wgmma consumers, races for `ldmatrix` consumers ([`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md) gotcha 1); `hopper_helpers.make_smem_layout_a/b` swizzles in element units: right for 1- and 2-byte types, wrong for e2m1 ([`blockscaled_mma`](blockscaled_mma.md) gotchas 2, 4) |
+| **Shared, or sm120's own, verified here** | use it, citing the entry | TMA + mbarrier ([`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md)); cp.async + `ldmatrix` + `mma.sync` ([`cpasync_multistage_pipeline`](cpasync_multistage_pipeline.md), [`warp_mma_fp8_ldsm`](warp_mma_fp8_ldsm.md)); cluster launch ([`launch_identity_stamp`](launch_identity_stamp.md)); block-scaled `mma.sync` and its scale-factor fragment helpers ([`blockscaled_mma`](blockscaled_mma.md)) |
+
+Anything not in the table is unclassified until a probe on this device places it -- for example `setmaxnreg`, which
+the CuTe DSL sm120 example `blackwell_geforce/dense_gemm.py` uses but no probe here has measured.
+
 ## Find by symptom first (this section is the entry point, not a table of contents)
 
 | What you see / what you are about to do | Look first at |
@@ -44,7 +60,10 @@ readings were taken.
 | **`smem_wavefronts_st` / `bankconf_st` read 0 in a kernel that clearly fills smem** (cp.async / `LDGSTS` supply) | [`smem_traffic_triage`](smem_traffic_triage.md) "The blind spot on sm120": read `sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts` per `LDGSTS` |
 | **A GEMM-shaped mainloop at ~70 % of the `mma.sync` peak with ~4 active warps per SM**, or choosing the stage count / K bytes per stage / warps per CTA of a cp.async pipeline | [`cpasync_multistage_pipeline`](cpasync_multistage_pipeline.md): CTAs per SM (smem <= ~49 KiB per CTA for two) moved it 12-13 %, the stage count did not; more warps via smaller warp tiles or `min_blocks_per_mp` (register cap -> spills) lost |
 | **The SASS / orchestration tools say "too few instructions" or give no dossier on an sm120 tensor kernel**, or the commit axis does not change when the stage count does | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) gotchas 21-22 (200-instruction floor for `mma.sync` pages; `CPWAIT` = cp.async wait depth) |
-| **Supplying a GEMM / attention mainloop with TMA**, choosing an in-loop producer vs a dedicated producer warp, or a warp-specialized CTA that unexpectedly runs 1 CTA / SM | [`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md): in-loop TMA beat cp.async (+2 % e4m3, +6 % bf16); a 5-warp CTA lost its second CTA per SM |
+| **Supplying a GEMM / attention mainloop with TMA**, choosing an in-loop producer vs a dedicated producer warp, or a warp-specialized CTA that unexpectedly runs 1 CTA / SM | [`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md): in-loop TMA beat cp.async (+3 % e4m3, +7 % bf16); a 5-warp CTA lost its second CTA per SM |
+| **A TMA-fed mainloop is exact on most launches and wrong on some** -- more often when its loop also issues global loads -- or the dossier nominates a `bare` / `barrier-only` stage release | [`blockscaled_mma`](blockscaled_mma.md) gotcha 1 / [`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md) gotcha 1: `fence_view_async_shared()` before every `consumer_release` (782 of 1000 launches wrong without it, 0 with it); reading it in SASS: [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) gotcha 24 |
+| **Writing an MXF8 / MXF4 / NVF4 (block-scaled) mainloop**, an FP4 kernel exact on random data but wrong on structured data, or an FP4 TMA copy dying with an illegal address | [`blockscaled_mma`](blockscaled_mma.md): TMA on byte views, the e2m1 smem view with the byte-unit swizzle, the scale-factor fragments, a selector check of the K mapping; which pieces are native to sm_120a and which are borrowed |
+| **A probe's numerics pass on random data and nothing checked the operand mapping**, or two fixes of a race are being ranked by a handful of failures | [`gpu_probe_ladder`](gpu_probe_ladder.md) gotchas 18-19 (selector patterns; 0 of N bounds the rate below 3 / N) |
 | **The dossier reads `mbar_objs = 0` / every mbarrier site UNRESOLVED on a page that clearly has `SYNCS` waits** | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) gotcha 23 (follow the `LEA` addend) |
 
 ## Interfaces
@@ -62,6 +81,7 @@ readings were taken.
 | [`warp_mma_fp8_ldsm`](warp_mma_fp8_ldsm.md) | FP8 `mma.sync` on sm120: cp.async -> swizzled K-major smem -> `ldmatrix` (`LDSM.16.M88.4`) -> `QMMA.16832`; census, swizzle vs linear bank conflicts, the cp.async fill counter blind spot | ✅ |
 | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) | **Interpretation recipe**: writing PTX/SASS footprint criteria that do not mistake an instrument fault for a kernel defect; sm120 worked example on a `mma.sync` tile | ✅ |
 | [`cpasync_multistage_pipeline`](cpasync_multistage_pipeline.md) | The sm120 mainloop: cp.async into S stages, `wait_group(S-2)` + `__syncthreads`, ldmatrix + `mma.sync`; measured bf16 / e4m3 throughput vs stages, K bytes per stage, CTAs per SM | ✅ |
-| [`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md) | TMA (`make_tiled_tma_atom` + `tma_partition`) into a full / empty mbarrier ring (`PipelineTmaAsync`) feeding ldmatrix + `mma.sync`; in-loop producer vs producer warp, measured | ✅ |
+| [`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md) | TMA (`make_tiled_tma_atom` + `tma_partition`) into a full / empty mbarrier ring (`PipelineTmaAsync`) feeding ldmatrix + `mma.sync`, a proxy fence before each stage release; in-loop producer vs producer warp, measured | ✅ |
+| [`blockscaled_mma`](blockscaled_mma.md) | Block-scaled `mma.sync` (MXF8 `QMMA.SF`, MXF4 / NVF4 `OMMA.SF`) in a TMA + mbarrier mainloop: byte-layout TMA, the e2m1 view with the byte swizzle, scale-factor fragments, the cross-proxy race and its fence; selector-checked | ✅ |
 
 Status: ⬜ TODO / 🟡 draft / ✅ Verified (the example runs on sm_120 and its source is cited).

@@ -9,11 +9,17 @@ mbarrier per stage, tx count = A + B stage bytes). Two shapes of the producer:
 - ``inline``: no producer warp; warp 0 fills all S stages up front, then after each ``consumer_release`` re-acquires
   the slot just released and issues the next tile (128 threads);
 - ``ws``: warp 4 is a dedicated producer (TMA only, ``producer_tail`` before exit), warps 0-3 consume (160 threads).
+Every consumer executes ``fence_view_async_shared()`` before ``consumer_release``: its ldmatrix reads of the stage are
+generic-proxy, the TMA refill of the released slot writes through the async proxy, and PTX orders the two only through
+a proxy fence (see blockscaled_mma_check.py for the measured race without it).
 
 Contracts:
 - ``numerics-<shape>-<dt>-r<row>-s<S>``: C == A32 @ B32^T exactly;
+- ``stress-inline-fp8`` : the same compiled inline e4m3 kernel, 30 launches, every one exact;
 - ``sass-<shape>``     : UTMALDG present, no LDGSTS, mbarrier try-wait present, exactly one BAR.SYNC on the page
-  (the pipeline's init rendezvous) -- no per-tile CTA barrier;
+  (the pipeline's init rendezvous) -- no per-tile CTA barrier -- and ``orch_tools.xproxy_releases`` finds no stage
+  release after an LDSM without a FENCE.VIEW.ASYNC.S between;
+- ``ctl-unfenced-inline``: (control) the inline build without the fence: the tool nominates its one release ``bare``;
 - ``orch-<shape>``     : the dossier resolves 2 x S mbarrier objects, all CONST (full + empty per stage); for ``ws`` its
   edges carry both directions copy-producer -> mma-consumer and mma-consumer -> copy-producer;
 - ``N-occupancy``      : (ncu) ``inline`` (64 B rows, 3 stages) runs 2 CTA / SM, ``ws`` 1 CTA / SM, and ``inline`` keeps
@@ -46,8 +52,9 @@ def build():
     class TmaWsGemm:
         """C (fp32) = A . B^T; 1 TMA producer warp + 4 ldmatrix/mma.sync consumer warps, mbarrier ring of S stages."""
 
-        def __init__(self, dtype_name, stages, row_bytes=64, tile=(128, 128), regs=None, ws=True):
+        def __init__(self, dtype_name, stages, row_bytes=64, tile=(128, 128), regs=None, ws=True, fence=True):
             self.ws = ws                         # True: warp 4 is a dedicated producer; False: warp 0 issues TMA in-loop
+            self.fence = fence                   # proxy fence before each consumer_release (False = the control)
             self.dtype_name, self.stages, self.row_bytes = dtype_name, stages, row_bytes
             self.BM, self.BN = tile
             self.regs = regs                     # (producer, consumer) setmaxnreg targets, or None
@@ -149,6 +156,9 @@ def build():
                         cute.copy(cpA, lA[None, None, kb, cs.index], rA[None, None, kb])
                         cute.copy(cpB, lB[None, None, kb, cs.index], rB[None, None, kb])
                         cute.gemm(tiled_mma, acc, tCrA[None, None, kb], tCrB[None, None, kb], acc)
+                    if cutlass.const_expr(self.fence):
+                        # ldmatrix reads (generic proxy) ordered before the TMA refill (async proxy) of this slot
+                        cute.arch.fence_view_async_shared()
                     pipe.consumer_release(cs)
                     cs.advance()
                     if warp == 0:
@@ -198,6 +208,8 @@ def build():
                             cute.copy(cpA, lA[None, None, kb, cs.index], rA[None, None, kb])
                             cute.copy(cpB, lB[None, None, kb, cs.index], rB[None, None, kb])
                             cute.gemm(tiled_mma, acc, tCrA[None, None, kb], tCrB[None, None, kb], acc)
+                        if cutlass.const_expr(self.fence):
+                            cute.arch.fence_view_async_shared()
                         pipe.consumer_release(cs)
                         cs.advance()
                     cute.autovec_copy(acc, thr_mma.partition_C(gC))
@@ -205,7 +217,7 @@ def build():
     return TmaWsGemm
 
 
-def run_cfg(dt, stages, row_bytes, ws, reps=20, check=True, M=4096, N=4096, K=4096):
+def run_cfg(dt, stages, row_bytes, ws, reps=20, check=True, M=4096, N=4096, K=4096, fence=True, stress=0):
     import torch
     import cutlass.cute as cute
     from cutlass.cute.runtime import from_dlpack
@@ -216,10 +228,17 @@ def run_cfg(dt, stages, row_bytes, ws, reps=20, check=True, M=4096, N=4096, K=40
     tdt = torch.float8_e4m3fn if dt == "fp8" else torch.bfloat16
     c = torch.zeros(M, N, device="cuda")
     ts = [from_dlpack(t, assumed_align=16) for t in (a32.to(tdt), b32.to(tdt), c)]
-    f = cute.compile(TmaWsGemm(dt, stages, row_bytes, ws=ws), *ts)
+    f = cute.compile(TmaWsGemm(dt, stages, row_bytes, ws=ws, fence=fence), *ts)
     f(*ts)
     torch.cuda.synchronize()
-    md = float((c - a32 @ b32.T).abs().max()) if check else float("nan")
+    ref = a32 @ b32.T
+    md = float((c - ref).abs().max()) if check else float("nan")
+    if stress:
+        bad = 0
+        for _ in range(stress):
+            c.zero_(); f(*ts); torch.cuda.synchronize()
+            bad += float((c - ref).abs().max()) != 0.0
+        return bad
     e0, e1 = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
     times = []
     for _ in range(reps):
@@ -240,19 +259,35 @@ def stage_numerics():
         v(f"numerics-{shape}-{dt}-r{row}-s{s}", md == 0.0, f"max_diff={md}")
 
 
+def stage_stress():
+    bad = run_cfg("fp8", 3, 64, False, stress=30)
+    v("stress-inline-fp8", bad == 0, f"{bad}/30 launches wrong")
+
+
 def stage_sass():
     shape = os.environ["FK_SHAPE"]
+    fence = os.environ.get("FK_FENCE", "1") == "1"
     S = 3
-    run_cfg("fp8", S, 64, shape == "ws", reps=1, check=False)
+    run_cfg("fp8", S, 64, shape == "ws", reps=1, check=False, fence=fence)
     cubin = sorted(glob.glob(os.path.join(os.environ["CUTE_DSL_DUMP_DIR"], "*.cubin")), key=os.path.getmtime)[-1]
     sass = subprocess.run(["cuobjdump", "-sass", cubin], capture_output=True, text=True).stdout
     cnt = lambda pat: len(re.findall(pat, sass))
     c = {"UTMALDG": cnt(r"\bUTMALDG"), "LDGSTS": cnt(r"\bLDGSTS"), "TRYWAIT": cnt(r"SYNCS\.PHASECHK\.TRANS64\.TRYWAIT"),
-         "BAR.SYNC": cnt(r"\bBAR\.SYNC"), "QMMA": cnt(r"\bQMMA"), "LDSM": cnt(r"\bLDSM")}
-    n(f"{shape}: SASS {c}")
-    v(f"sass-{shape}", c["UTMALDG"] > 0 and c["LDGSTS"] == 0 and c["TRYWAIT"] > 0 and c["BAR.SYNC"] == 1, str(c))
+         "BAR.SYNC": cnt(r"\bBAR\.SYNC"), "QMMA": cnt(r"\bQMMA"), "LDSM": cnt(r"\bLDSM"),
+         "MEMBAR": cnt(r"\bMEMBAR"), "FENCE.VIEW.ASYNC.S": cnt(r"\bFENCE\.VIEW\.ASYNC\.S")}
     from forgekernel.skills import orch_tools as OT
     d = OT.summarize(sass)
+    xp = d["xproxy_release"]
+    if os.environ.get("FK_FIXTURE"):
+        open(os.environ["FK_FIXTURE"], "w").write(
+            "\n".join(re.sub(r"\s*/\* 0x[0-9a-f]{16} \*/", "", ln) for ln in sass.splitlines() if ln.strip()) + "\n")
+    if not fence:
+        n(f"{shape} without the fence: SASS {c}; cross-proxy releases {xp}")
+        v(f"ctl-unfenced-{shape}", xp == {"bare": 1, "barrier-only": 0}, f"xproxy_release={xp}")
+        return
+    n(f"{shape}: SASS {c}; cross-proxy releases {xp}")
+    v(f"sass-{shape}", c["UTMALDG"] > 0 and c["LDGSTS"] == 0 and c["TRYWAIT"] > 0 and c["BAR.SYNC"] == 1
+      and xp == {"bare": 0, "barrier-only": 0}, f"{c} xproxy_release={xp}")
     got = {k: d.get(k) for k in ("loops", "mbar_objs", "mbar_tiers", "rings", "edges", "cache_ops")}
     n(f"{shape}: dossier {json.dumps(got)}")
     ok = d["mbar_objs"] == 2 * S and d["mbar_tiers"] == {"CONST": 2 * S}
@@ -260,9 +295,6 @@ def stage_sass():
         e = [tuple(x) for x in d["edges"]]
         ok = ok and ("copy-producer", "mma-consumer") in e and ("mma-consumer", "copy-producer") in e
     v(f"orch-{shape}", ok, f"mbar_objs={d['mbar_objs']} tiers={d['mbar_tiers']} edges={d['edges']}")
-    if os.environ.get("FK_FIXTURE"):
-        open(os.environ["FK_FIXTURE"], "w").write(
-            "\n".join(re.sub(r"\s*/\* 0x[0-9a-f]{16} \*/", "", ln) for ln in sass.splitlines() if ln.strip()) + "\n")
 
 
 def stage_target():
@@ -298,25 +330,28 @@ def ncu_occupancy():
     return [("N-occupancy", ok, md)]
 
 
-STAGES = {"numerics": stage_numerics, "sass": stage_sass, "target": stage_target}
+STAGES = {"numerics": stage_numerics, "stress": stage_stress, "sass": stage_sass, "target": stage_target}
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         STAGES[sys.argv[1]]()
         sys.exit(0)
     root = tempfile.mkdtemp(prefix="fk_tma_")
-    plan = [("numerics", [f"numerics-{s}-{d}-r{r}-s{st}" for s, d, r, st in CFGS], None)]
-    for shape in ("inline", "ws"):
-        dd = os.path.join(root, shape)
+    plan = [("numerics", [f"numerics-{s}-{d}-r{r}-s{st}" for s, d, r, st in CFGS], None),
+            ("stress", ["stress-inline-fp8"], None)]
+    for shape, fence in (("inline", "1"), ("ws", "1"), ("inline", "0")):
+        dd = os.path.join(root, f"{shape}{'' if fence == '1' else '_unfenced'}")
         os.makedirs(dd)
-        env = {"FK_SHAPE": shape, "CUTE_DSL_KEEP": "cubin", "CUTE_DSL_DUMP_DIR": dd, "CUTE_DSL_NO_CACHE": "1"}
+        env = {"FK_SHAPE": shape, "FK_FENCE": fence, "CUTE_DSL_KEEP": "cubin", "CUTE_DSL_DUMP_DIR": dd,
+               "CUTE_DSL_NO_CACHE": "1"}
         if os.environ.get("FK_FIXTURE_DIR"):
-            env["FK_FIXTURE"] = os.path.join(os.environ["FK_FIXTURE_DIR"], f"tma_mbarrier_fp8_{shape}.sass")
-        plan.append(("sass", [f"sass-{shape}", f"orch-{shape}"], env))
+            env["FK_FIXTURE"] = os.path.join(os.environ["FK_FIXTURE_DIR"],
+                                             f"tma_mbarrier_fp8_{shape}{'' if fence == '1' else '_unfenced'}.sass")
+        plan.append(("sass", [f"sass-{shape}", f"orch-{shape}"] if fence == "1" else [f"ctl-unfenced-{shape}"], env))
     rc = run(HERE, plan, "tma-mbarrier-core", cap_s=900)
     occ = ncu_occupancy()
     for tag, ok, md in occ:
         print(f"PROBE {'PASS' if ok else 'FAIL'} {tag} ({md})")
     all_ok = rc == 0 and all(ok for _, ok, _ in occ)
-    print(f"PROBE {'PASS' if all_ok else 'FAIL'} tma-mbarrier contracts={len(CFGS) + 4 + len(occ)}")
+    print(f"PROBE {'PASS' if all_ok else 'FAIL'} tma-mbarrier contracts={sum(len(t) for _, t, _ in plan) + len(occ)}")
     sys.exit(0 if all_ok else 1)

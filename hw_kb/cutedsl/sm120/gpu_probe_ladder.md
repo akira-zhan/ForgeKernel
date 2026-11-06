@@ -3,8 +3,9 @@
 > **Certification source: the sm90 tree, partially re-checked on sm100 · re-checked on sm120** for §1, §2, §5's
 > fingerprint, §6 and gotchas 1, 2, 3, 7, 13 (probe `probes/sm120/methodology/probe_ladder_check.py`,
 > `PROBE PASS probe-ladder contracts=9`, CuTe DSL 4.8.0, RTX PRO 5000) and for §7 (probe
-> `probes/sm120/device_facts/run_facts.py`, `PROBE PASS device-facts contracts=35`). Gotchas 4-6, 8-12, 14, 15 are
-> transcribed method; their readings were taken on sm90 / sm100.
+> `probes/sm120/device_facts/run_facts.py`, `PROBE PASS device-facts contracts=35`), and gotchas 18-19 (probe
+> `probes/sm120/mechanisms/blockscaled_mma_check.py`, `PROBE PASS blockscaled-mma contracts=15`). Gotchas 4-6, 8-12,
+> 14, 15 are transcribed method; their readings were taken on sm90 / sm100.
 >
 > One entry per hardware interface. Operator-agnostic; mechanism only. This entry is an **interpretation recipe**: it does not teach how to use any mechanism;
 > it only teaches how to build the probe that carries the verdicts so that one GPU round brings back **more than one** fact.
@@ -318,6 +319,20 @@ resolution reports an impossible clock (above the card's maximum), which is itse
 17. **The no-line fingerprint list is per architecture.** A wild global store on sm120 dies with `operation not
     supported on global/shared address space`, not `illegal memory access`; a fingerprint regex that lists only the
     latter misclassifies it (§5). The `rc != 0` / missing-verdict fallbacks still catch it; keep them.
+18. **An exact result on random data does not prove the operand mapping.** A permutation applied the same way to both
+    operands of a contraction (e.g. a K reorder of A and of B from one wrong swizzle) leaves A . B^T unchanged, so a
+    random-integer GEMM reads exact. Pin the mapping with a selector: B[n, k] = 1 only at k = n + off, A encoding k
+    with distinguishable values, unit scales -- C[m, n] must equal A[m, n + off]; run two offsets. On sm120 the FP4
+    swizzle fault of [`blockscaled_mma`](blockscaled_mma.md) gotcha 2 read exact on random data and wrong on 8192 of
+    16384 outputs under the selector.
+19. **A race needs a launch count sized to the rate you have to exclude.** Compile once, launch N times, compare every
+    launch. 0 wrong of N bounds the per-launch failure rate below 3 / N at 95 % (rule of three), so 0 of 100 cannot
+    separate a fix from a 1 % race, and 1 of 100 against 0 of 100 does not rank two fixes. It misled here: a barrier
+    read 1 / 100 against the proxy fence's 0 / 100 and was briefly taken as "the barrier is insufficient"; 1000
+    launches each read 0 and 0. What did separate the cases: 782 / 1000 without either, the SASS wait masks, and a
+    1 / 1000 failure of the unfenced shape with no global loads in its loop ([`blockscaled_mma`](blockscaled_mma.md)
+    gotcha 1). Rates also drift between runs of the same binary (59 / 100, 782 / 1000, 22 / 30): a control asserts
+    "at least one wrong", never a rate.
 
 ## Sources
 
@@ -328,6 +343,9 @@ resolution reports an impossible clock (above the card's maximum), which is itse
   `G13-dsl-error-attributes`, `G13-build-error-cause-carries-the-verifier-text`, `G13-shape-error-is-not-a-dsl-error`.
 - This repo's GPU certification on sm120 (§7, gotcha 16): `probes/sm120/device_facts/run_facts.py` --
   `PROBE PASS device-facts contracts=35`.
+- This repo's GPU certification on sm120 (gotchas 18, 19): `probes/sm120/mechanisms/blockscaled_mma_check.py` --
+  `PROBE PASS blockscaled-mma contracts=15` (`kmap-{mxf8,mxf4,nvf4}`, `ctl-f4-elem-swizzle`, `stress-*`,
+  `ctl-unfenced-races`).
 - CuTe DSL API symbols: `cutlass.base_dsl.common.DSLBaseError` (`message`, `error_code`, `cause`, `suggestion`,
   `filename`, `line`), `cute.compile`, `cutlass.const_expr`; CUDA Runtime API
   `cudaOccupancyMaxActiveBlocksPerMultiprocessor`: https://docs.nvidia.com/cuda/cuda-runtime-api/

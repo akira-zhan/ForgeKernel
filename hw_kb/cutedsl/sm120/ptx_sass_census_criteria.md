@@ -4,8 +4,9 @@
 > on an FP8 `mma.sync` + `ldmatrix` + cp.async tile (`probes/sm120/mechanisms/warp_mma_fp8_ldsm_check.py`,
 > `PROBE PASS warp-mma-fp8-ldsm contracts=17`; worked example in §7), and gotcha 11 + new gotchas 21-22 on a cp.async
 > multistage mainloop (`probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=19`),
-> and gotcha 23 on TMA + mbarrier mainloops (`probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`,
-> `PROBE PASS tma-mbarrier contracts=10`). Gotchas 4-9 are transcribed method (their readings
+> gotcha 23 on TMA + mbarrier mainloops (`probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`,
+> `PROBE PASS tma-mbarrier contracts=12`), and gotcha 24 on the same probe plus the block-scaled one
+> (`probes/sm120/mechanisms/blockscaled_mma_check.py`, `PROBE PASS blockscaled-mma contracts=15`). Gotchas 4-9 are transcribed method (their readings
 > were taken on sm90 barrier / conversion probes); gotchas 11-16 read the orchestration dossier axes
 > (`commit` / `supply` / `rings` / `cache_ops` / `nbar_*`) on sm90 TMA + wgmma kernels and are **not re-checked on sm120**.
 >
@@ -417,6 +418,22 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
     producer page its two edge directions. Corollary for gotchas 12 / 16: before reading an appearing / vanishing
     mbarrier or ring axis as codegen moving along, check how many sites resolved -- an all-UNRESOLVED page is an
     instrument fault, not a structure.
+24. **A stage release after generic smem reads needs a `FENCE.VIEW.ASYNC.S` between them; the census reads it with
+    `orch_tools.xproxy_releases`.** A consumer's stage release is `SYNCS.ARRIVE.TRANS64[.RED].A1T0` (count 1, no tx;
+    the producer's expect-tx arrive carries a byte register and no `A1T0`). When the slot is refilled by TMA (async
+    proxy), its `LDS` / `LDSM` reads (generic proxy) must be followed by `FENCE.VIEW.ASYNC.S` -- the SASS of
+    `fence.proxy.async.shared::cta`, after a `MEMBAR.ALL.CTA` -- before the release. ptxas does not supply the
+    ordering by itself: on sm_120a the unfenced arrive sat right after the stage's last `LDSM` with an empty wait
+    mask, a `BAR.SYNC` placed between them had an empty wait mask too, and only with the fence did the arrive wait on
+    a scoreboard (the one `FENCE.VIEW.ASYNC.S` writes). To read the bits: in the second 64-bit word `cuobjdump -sass`
+    prints per instruction, wait mask = bits 52-57, read scoreboard = bits 49-51, write scoreboard = bits 46-48
+    (7 = none), stall = bits 41-44. The dossier section "stage release after generic smem read, no proxy fence" lists
+    each release as `bare` (nothing between the read and the release) or `barrier-only` (a `BAR.SYNC`, no fence),
+    and the summary carries `xproxy_release` counts (reported, not a diff axis). These are nominations: the read's
+    address is not resolved, so an `LDS` of a buffer no TMA refills is listed too. Readings: the unfenced TMA
+    mainloop `bare` 1, its fenced build 0; the CUTLASS C++ sm120 TMA warp-specialized GEMM page `barrier-only` 2 (its
+    mainloop; its tile-scheduler pipeline fences after its `LDS` and is not listed); cp.async pages 0. What a `bare`
+    release costs: [`blockscaled_mma`](blockscaled_mma.md) gotcha 1 (782 of 1000 launches wrong).
 
 ## Sources
 
@@ -460,6 +477,12 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
 - Gotchas 21, 22: `probes/sm120/mechanisms/cpasync_multistage_check.py` -- `PROBE PASS cpasync-multistage contracts=19`
   (`orch-commit-s2`, `orch-commit-s3`, `sass-wait-depth-s2`, `sass-wait-depth-s3`); `tests/test_sm120_sass.py`
   (`test_short_mma_sync_page_is_not_below_the_floor`, `test_commit_axis_reads_the_cp_async_wait_depth`).
-- Gotcha 23: `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py` -- `PROBE PASS tma-mbarrier contracts=10`
+- Gotcha 23: `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py` -- `PROBE PASS tma-mbarrier contracts=12`
   (`orch-inline`, `orch-ws`); `tests/test_sm120_sass.py` (`test_mbarrier_addresses_resolve_through_the_lea_addend`,
   which fails without the fix).
+- Gotcha 24: `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py` (`sass-inline`, `sass-ws`, `ctl-unfenced-inline`)
+  and `probes/sm120/mechanisms/blockscaled_mma_check.py` -- `PROBE PASS blockscaled-mma contracts=15`
+  (`sass-{mxf8,mxf4,nvf4}`, `ctl-unfenced-races`); `tests/test_sm120_sass.py`
+  (`test_fenced_tma_mainloops_have_no_cross_proxy_release`, `test_unfenced_release_is_nominated_bare`,
+  `test_cutlass_sm120_mainloop_release_is_barrier_only`, `test_no_cross_proxy_release_without_mbarrier_releases`,
+  `test_report_lists_the_nomination`). PTX ISA 8.6 "Proxies": https://docs.nvidia.com/cuda/parallel-thread-execution/
