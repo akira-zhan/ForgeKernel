@@ -2,7 +2,8 @@
 
 > **Certification source: the sm90 tree · re-checked on sm120** for §1-§4, gotchas 1-3, 10 and the new sm120 gotchas 17-20
 > on an FP8 `mma.sync` + `ldmatrix` + cp.async tile (`probes/sm120/mechanisms/warp_mma_fp8_ldsm_check.py`,
-> `PROBE PASS warp-mma-fp8-ldsm contracts=17`; worked example in §7). Gotchas 4-9 are transcribed method (their readings
+> `PROBE PASS warp-mma-fp8-ldsm contracts=17`; worked example in §7), and gotcha 11 + new gotchas 21-22 on a cp.async
+> multistage mainloop (`probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=14`). Gotchas 4-9 are transcribed method (their readings
 > were taken on sm90 barrier / conversion probes); gotchas 11-16 read the orchestration dossier axes
 > (`commit` / `supply` / `rings` / `cache_ops` / `nbar_*`) on sm90 TMA + wgmma kernels and are **not re-checked on sm120**.
 >
@@ -392,6 +393,18 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
     `SASS-OPERANDS-SKIP ... reason=mma-sync-operands-are-registers mma_sync=N`. The operand path on sm120 is judged by
     the `LDSM` vs scalar `LDS` split of §7, not by that line.
 
+21. **The instruction floor is per page kind.** The SASS tools refused pages under 500 instructions (sm90: a tensor
+    kernel is thousands, the RNG bystander ~400). A compact sm120 mainloop (cp.async -> ldmatrix -> QMMA, CTA 128 x 128,
+    two CTAs per SM) is ~350, so every tool reported "too few instructions" / no dossier on exactly the kernels sm120
+    needs read. The floor is now 200 for a page that issues an `mma.sync` family (`sass_tools.below_floor`), 500
+    otherwise; a stub of a few lines with an HMMA in it is still refused.
+22. **On sm120 gotcha 11's premise holds and the commit axis now carries the cp.async depth.** With a runtime K loop the
+    dossier reads `loops = {mma-consumer: 1}` and a commit row per loop; the cp.async group wait
+    (`DEPBAR.LE SB0, N`) is read as `CPWAIT {LE N xK}` -- a 2-stage and a 3-stage pipeline differ only there (`0x0` vs
+    `0x1`). Before this, the axis read `DEPBAR {}` for both: the depth change was invisible. `DEPBAR.LE SB0` also
+    follows bulk TMA stores (`UTMASTG` + `UTMACMDFLUSH`, no `LDGDEPBAR` in the loop); read the two cases apart by the
+    `LDGDEPBAR` count of the same row.
+
 ## Sources
 
 - Official opcode surface: the `barrier`/`bar` family of the PTX ISA (from ISA 8.x `barrier.cta.*.aligned` is the
@@ -431,3 +444,6 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
   `N-ldgsts-blind-hw-counters`, `N-linfill-fill-wavefronts`, `N-ldgsts-conflict-counter-blind`). Gotcha 18:
   `probes/sm120/methodology/smem_triage_check.py` (`PROBE PASS smem-triage contracts=4`, the executed-count contract
   that replaced a static one). Gotcha 20: `tests/test_sm120_sass.py` (`test_operand_census_skips_rather_than_fails_on_mma_sync`).
+- Gotchas 21, 22: `probes/sm120/mechanisms/cpasync_multistage_check.py` -- `PROBE PASS cpasync-multistage contracts=14`
+  (`orch-commit-s2`, `orch-commit-s3`, `sass-wait-depth-s2`, `sass-wait-depth-s3`); `tests/test_sm120_sass.py`
+  (`test_short_mma_sync_page_is_not_below_the_floor`, `test_commit_axis_reads_the_cp_async_wait_depth`).

@@ -42,6 +42,8 @@ readings were taken.
 | **Writing an FP8 (e4m3 / e5m2) mainloop**, or an FP8 kernel's SASS feeds `QMMA` from scalar `LDS.U8`/`LDS.U16`, or `bankconf_ld` is high in a tensor-core loop | [`warp_mma_fp8_ldsm`](warp_mma_fp8_ldsm.md): `MmaFP8Op` (16,8,32) + `LdMatrix8x8x16bOp` x4 from a swizzled K-major tile; expected footprint table |
 | **A PTX/SASS count contract fails while the numerics pass**, or a census shows scalar loads / zero counts you cannot explain | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md): histogram first, family + qualifier, failure form apart, PTX vs SASS, drop `@!PT`, executed vs static counts |
 | **`smem_wavefronts_st` / `bankconf_st` read 0 in a kernel that clearly fills smem** (cp.async / `LDGSTS` supply) | [`smem_traffic_triage`](smem_traffic_triage.md) "The blind spot on sm120": read `sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts` per `LDGSTS` |
+| **A GEMM-shaped mainloop at ~70 % of the `mma.sync` peak with ~4 active warps per SM**, or choosing the stage count / K bytes per stage / warps per CTA of a cp.async pipeline | [`cpasync_multistage_pipeline`](cpasync_multistage_pipeline.md): CTAs per SM (smem <= ~49 KiB per CTA for two) moved it 12-13 %, the stage count did not |
+| **The SASS / orchestration tools say "too few instructions" or give no dossier on an sm120 tensor kernel**, or the commit axis does not change when the stage count does | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) gotchas 21-22 (200-instruction floor for `mma.sync` pages; `CPWAIT` = cp.async wait depth) |
 
 ## Interfaces
 
@@ -57,5 +59,6 @@ readings were taken.
 | [`ptx_escape`](ptx_escape.md) | `llvm.inline_asm` inside `@dsl_user_op` (no operands / address operands / a return value), the A -> B -> C expressibility ladder, the SASS footprint check with DSL 4.8.0's artifact switches | ✅ |
 | [`warp_mma_fp8_ldsm`](warp_mma_fp8_ldsm.md) | FP8 `mma.sync` on sm120: cp.async -> swizzled K-major smem -> `ldmatrix` (`LDSM.16.M88.4`) -> `QMMA.16832`; census, swizzle vs linear bank conflicts, the cp.async fill counter blind spot | ✅ |
 | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) | **Interpretation recipe**: writing PTX/SASS footprint criteria that do not mistake an instrument fault for a kernel defect; sm120 worked example on a `mma.sync` tile | ✅ |
+| [`cpasync_multistage_pipeline`](cpasync_multistage_pipeline.md) | The sm120 mainloop: cp.async into S stages, `wait_group(S-2)` + `__syncthreads`, ldmatrix + `mma.sync`; measured bf16 / e4m3 throughput vs stages, K bytes per stage, CTAs per SM | ✅ |
 
 Status: ⬜ TODO / 🟡 draft / ✅ Verified (the example runs on sm_120 and its source is cited).
