@@ -217,3 +217,39 @@ def test_mbarrier_addresses_resolve_through_the_lea_addend():
 def test_tma_mainloop_cache_op_anchor_is_the_tma_load():
     for name in ("tma_mbarrier_fp8_ws", "tma_mbarrier_fp8_inline"):
         assert OT.summarize(_page(name))["cache_ops"] == ["UTMALDG.2D"]
+
+
+# --- cross-proxy release: generic smem reads before an mbarrier stage release ---------------------
+
+def test_fenced_tma_mainloops_have_no_cross_proxy_release():
+    """fence_view_async_shared() before consumer_release lowers to MEMBAR.ALL.CTA + FENCE.VIEW.ASYNC.S
+    between the last LDSM of the stage and its SYNCS.ARRIVE...A1T0."""
+    for name in ("tma_mbarrier_fp8_ws", "tma_mbarrier_fp8_inline"):
+        assert OT.summarize(_page(name))["xproxy_release"] == {"bare": 0, "barrier-only": 0}, name
+
+
+def test_unfenced_release_is_nominated_bare():
+    """Without the fence ptxas issues the release right after the stage's last LDSM, waiting on no
+    scoreboard: the TMA refill (async proxy) can overwrite smem the ldmatrix has not read yet."""
+    d = OT.build_dossier(_page("tma_mbarrier_fp8_inline_unfenced"))
+    assert [(d["instrs"][i].opcode, d["instrs"][j].opcode, c) for i, j, c in d["xproxy"]] == [
+        ("SYNCS.ARRIVE.TRANS64.A1T0", "LDSM.16.M88.4", "bare")]
+    assert OT.summarize(_page("tma_mbarrier_fp8_inline_unfenced"))["mbar_objs"] == 6
+
+
+def test_cutlass_sm120_mainloop_release_is_barrier_only():
+    """CUTLASS C++ sm120 mainloops rendezvous the MMA threads (BAR.SYNC 0x7) before releasing, with
+    no proxy fence; the page's other releases (fenced after their LDS) are not nominated."""
+    assert OT.summarize(_page(TMA_WS))["xproxy_release"] == {"bare": 0, "barrier-only": 2}
+
+
+def test_no_cross_proxy_release_without_mbarrier_releases():
+    for name in (CPASYNC, PIPE2, PIPE3):
+        assert OT.summarize(_page(name))["xproxy_release"] == {"bare": 0, "barrier-only": 0}, name
+
+
+def test_report_lists_the_nomination(capsys):
+    assert OT.report(_page("tma_mbarrier_fp8_inline_unfenced"))
+    out = capsys.readouterr().out
+    sec = out.split("cross-proxy WAR; nominations) ===")[1].split("===")[0]
+    assert "SYNCS.ARRIVE.TRANS64.A1T0" in sec and ": bare -- LDSM.16.M88.4" in sec

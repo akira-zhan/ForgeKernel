@@ -839,6 +839,54 @@ def commit_groups(instrs, regions: List[Region]) -> List[str]:
     return lines
 
 
+_XPROXY_SCAN_CAP = 512   # straight-line instructions scanned back past the region start
+
+
+def _is_stage_release(op: str) -> bool:
+    """mbarrier arrive with count 1 and no tx bytes: a consumer handing a stage back
+    (``SYNCS.ARRIVE.TRANS64[.RED].A1T0``) -- the producer's expect-tx arrive carries a
+    byte register instead and has no A1T0 component."""
+    return fam_of(op) in ("SYNCS", "USYNCS") and "ARRIVE" in op and "A1T0" in op.split(".")
+
+
+def xproxy_releases(instrs, regions: List[Region]) -> List[Tuple[int, int, str]]:
+    """Stage releases not separated from a preceding generic-proxy smem read by a proxy
+    fence: ``(release idx, read idx, "bare" | "barrier-only")``.
+
+    The release hands the slot to a TMA refill, which writes smem through the async
+    proxy; an ``LDS`` / ``LDSM`` of the slot is a generic-proxy read, and PTX orders the
+    two only through a proxy fence (``fence.proxy.async.shared::cta`` ->
+    ``FENCE.VIEW.ASYNC.S``). Scans back from each release through its region (a loop
+    wraps once through its tail = the previous iteration, then the straight code before
+    it, capped): a FENCE.VIEW.ASYNC.S first -> fenced, not listed; an LDS/LDSM first ->
+    listed, ``barrier-only`` when a ``BAR.SYNC`` sits between the read and the release
+    (CUTLASS C++ sm120 mainloops), ``bare`` when nothing does. In the sm_120a probe builds
+    ptxas issued the arrive (and a BAR.SYNC) with no wait on the LDSM scoreboards; ``bare``
+    is the shape measured racing there. Nominations: the read's address is not resolved,
+    so an LDS of a buffer no TMA writes is listed too; generic smem WRITES (STS) before a
+    release are not checked."""
+    out = []
+    for i, ins in enumerate(instrs):
+        if not _is_stage_release(ins.opcode):
+            continue
+        reg = region_of(regions, i)
+        order = list(range(i - 1, reg.lo - 1, -1))
+        if reg.kind == "loop":
+            order += list(range(reg.hi, i, -1))
+        order += list(range(reg.lo - 1, max(-1, reg.lo - 1 - _XPROXY_SCAN_CAP), -1))
+        barrier = False
+        for j in order:
+            op = instrs[j].opcode
+            if op.startswith("FENCE.VIEW.ASYNC.S"):
+                break
+            if fam_of(op) in ("LDS", "LDSM"):
+                out.append((i, j, "barrier-only" if barrier else "bare"))
+                break
+            if fam_of(op) == "BAR" and ".SYNC" in op:
+                barrier = True
+    return out
+
+
 # --------------------------------------------------------------------------- #
 # 5. Dossier assembly, report, diff
 # --------------------------------------------------------------------------- #
@@ -965,6 +1013,7 @@ def build_dossier(sass_text: str, launch: Optional[int] = None, kernel: str = ""
         "supply": supply_order(instrs, regions),
         "cache": cache_policy(instrs),
         "commit": commit_groups(instrs, regions),
+        "xproxy": xproxy_releases(instrs, regions),
     }
 
 
@@ -1073,6 +1122,13 @@ def report(sass_text: str, out=print, launch: Optional[int] = None,
     out("\n=== issue-then-correct (nominations, not convictions) ===")
     for line in d["itc"] or ["  none nominated"]:
         out("  " + line if not line.startswith("  ") else line)
+    out("\n=== stage release after generic smem read, no proxy fence "
+        "(cross-proxy WAR; nominations) ===")
+    for i, j, cls in d["xproxy"]:
+        out(f"  {instrs[i].addr} {instrs[i].opcode} r{region_of(regions, i).rid}: {cls}"
+            f" -- {instrs[j].opcode} at {instrs[j].addr}, no FENCE.VIEW.ASYNC.S between")
+    if not d["xproxy"]:
+        out("  none nominated")
     out("\n=== supply order (copy-producer loops) ===")
     for line in d["supply"] or ["  no copy-producer loop found"]:
         out("  " + line if not line.startswith("  ") else line)
@@ -1194,6 +1250,10 @@ def _summary_from_dossier(d: dict) -> dict:
         "supply_counts": sorted(_drop_region_id(line, keep_label=False)
                                 for line in d["supply"]),
         "cache_ops": sorted(d["cache"]),
+        # reported, not a contract axis: stage releases after generic smem reads with no
+        # proxy fence between (xproxy_releases), by class
+        "xproxy_release": {k: sum(1 for _, _, c in d.get("xproxy", ()) if c == k)
+                           for k in ("bare", "barrier-only")},
         # reported, not a contract axis (not in _DIFF_KEYS): the precision gate's
         # SASS cross-check reads it (loop/precision_gate.sass_precision_findings)
         "mma_precision": mma_precision(d["instrs"]),
