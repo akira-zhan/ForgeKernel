@@ -27,10 +27,14 @@ readings were taken.
 
 | What you see / what you are about to do | Look first at |
 |---|---|
+| **Pricing a plan on the RTX PRO 5000** -- a roofline or ridge point, a "% of peak" reading of an NCU profile, choosing bf16 vs FP8 vs block-scaled FP4 by rate, warps per SM to hide `mma.sync` latency, whether a working set stays in the 96 MiB L2 | [`device_facts_rtx_pro_5000`](device_facts_rtx_pro_5000.md): measured per-kind `mma.sync` rate and latency, smem / L2 / DRAM bandwidth and latency, launch cost |
+| **The FP4 kernel runs no faster than FP8** -- e2m1 operands fed through `kind::f8f6f4` (`QMMA.16832...E2M1`) | [`device_facts_rtx_pro_5000`](device_facts_rtx_pro_5000.md) tensor-core table: only the block-scaled `OMMA.SF.16864` forms (`kind::mxf4` / `kind::mxf4nvf4`) run at 2x the FP8 rate |
+| **A tensor-core mainloop stalls on shared-memory reads, not on the MMA** -- fragments re-loaded from smem for every `mma.sync` | [`device_facts_rtx_pro_5000`](device_facts_rtx_pro_5000.md) "Shared memory cannot feed `mma.sync` without register reuse": 768 B per mma vs 2048 B per 16 clk per SM |
 
 ## Interfaces
 
 | Interface | Purpose (one line) | Status |
 |------|---------------|------|
+| [`device_facts_rtx_pro_5000`](device_facts_rtx_pro_5000.md) | Measured budget of the RTX PRO 5000 (GB202, 110 SMs): `mma.sync` rate/latency per kind, FFMA/MUFU, smem/L2/DRAM bandwidth and latency, launch cost | ✅ |
 
 Status: ⬜ TODO / 🟡 draft / ✅ Verified (the example runs on sm_120 and its source is cited).
