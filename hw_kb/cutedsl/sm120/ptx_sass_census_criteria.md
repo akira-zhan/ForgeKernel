@@ -3,7 +3,9 @@
 > **Certification source: the sm90 tree · re-checked on sm120** for §1-§4, gotchas 1-3, 10 and the new sm120 gotchas 17-20
 > on an FP8 `mma.sync` + `ldmatrix` + cp.async tile (`probes/sm120/mechanisms/warp_mma_fp8_ldsm_check.py`,
 > `PROBE PASS warp-mma-fp8-ldsm contracts=17`; worked example in §7), and gotcha 11 + new gotchas 21-22 on a cp.async
-> multistage mainloop (`probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=19`). Gotchas 4-9 are transcribed method (their readings
+> multistage mainloop (`probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=19`),
+> and gotcha 23 on TMA + mbarrier mainloops (`probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`,
+> `PROBE PASS tma-mbarrier contracts=10`). Gotchas 4-9 are transcribed method (their readings
 > were taken on sm90 barrier / conversion probes); gotchas 11-16 read the orchestration dossier axes
 > (`commit` / `supply` / `rings` / `cache_ops` / `nbar_*`) on sm90 TMA + wgmma kernels and are **not re-checked on sm120**.
 >
@@ -405,6 +407,17 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
     follows bulk TMA stores (`UTMASTG` + `UTMACMDFLUSH`, no `LDGDEPBAR` in the loop); read the two cases apart by the
     `LDGDEPBAR` count of the same row.
 
+23. **An address chain must follow the operand that carries the offset, not the one that shares the destination's
+    name.** sm120 mbarrier (and other shared-window) addresses are `ULEA Ud, Ua, Ub, 0x18` = `(Ua << 24) + Ub` with
+    `Ua` from `S2UR SR_CgaCtaId` and the offset in `Ub`. The resolver used to prefer "the source named like the
+    destination", so `ULEA UR21, UR5, UR21, 0x18` resolved (UR21 is the addend) while `ULEA UR4, UR4, UR5, 0x18`
+    walked into `SR_CgaCtaId`: the same pipeline read 6 CONST mbarrier objects or **0** depending only on register
+    allocation (a dedicated-producer TMA mainloop read `mbar_objs = 0`, `rings = []`, every site UNRESOLVED). Plain
+    `LEA` / `ULEA` (no `.HI`) now follow the addend; both pages read 6 objects (full + empty x 3 stages) and the
+    producer page its two edge directions. Corollary for gotchas 12 / 16: before reading an appearing / vanishing
+    mbarrier or ring axis as codegen moving along, check how many sites resolved -- an all-UNRESOLVED page is an
+    instrument fault, not a structure.
+
 ## Sources
 
 - Official opcode surface: the `barrier`/`bar` family of the PTX ISA (from ISA 8.x `barrier.cta.*.aligned` is the
@@ -447,3 +460,6 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
 - Gotchas 21, 22: `probes/sm120/mechanisms/cpasync_multistage_check.py` -- `PROBE PASS cpasync-multistage contracts=19`
   (`orch-commit-s2`, `orch-commit-s3`, `sass-wait-depth-s2`, `sass-wait-depth-s3`); `tests/test_sm120_sass.py`
   (`test_short_mma_sync_page_is_not_below_the_floor`, `test_commit_axis_reads_the_cp_async_wait_depth`).
+- Gotcha 23: `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py` -- `PROBE PASS tma-mbarrier contracts=10`
+  (`orch-inline`, `orch-ws`); `tests/test_sm120_sass.py` (`test_mbarrier_addresses_resolve_through_the_lea_addend`,
+  which fails without the fix).

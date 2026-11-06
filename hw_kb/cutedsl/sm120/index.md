@@ -44,6 +44,8 @@ readings were taken.
 | **`smem_wavefronts_st` / `bankconf_st` read 0 in a kernel that clearly fills smem** (cp.async / `LDGSTS` supply) | [`smem_traffic_triage`](smem_traffic_triage.md) "The blind spot on sm120": read `sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts` per `LDGSTS` |
 | **A GEMM-shaped mainloop at ~70 % of the `mma.sync` peak with ~4 active warps per SM**, or choosing the stage count / K bytes per stage / warps per CTA of a cp.async pipeline | [`cpasync_multistage_pipeline`](cpasync_multistage_pipeline.md): CTAs per SM (smem <= ~49 KiB per CTA for two) moved it 12-13 %, the stage count did not; more warps via smaller warp tiles or `min_blocks_per_mp` (register cap -> spills) lost |
 | **The SASS / orchestration tools say "too few instructions" or give no dossier on an sm120 tensor kernel**, or the commit axis does not change when the stage count does | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) gotchas 21-22 (200-instruction floor for `mma.sync` pages; `CPWAIT` = cp.async wait depth) |
+| **Supplying a GEMM / attention mainloop with TMA**, choosing an in-loop producer vs a dedicated producer warp, or a warp-specialized CTA that unexpectedly runs 1 CTA / SM | [`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md): in-loop TMA beat cp.async (+2 % e4m3, +6 % bf16); a 5-warp CTA lost its second CTA per SM |
+| **The dossier reads `mbar_objs = 0` / every mbarrier site UNRESOLVED on a page that clearly has `SYNCS` waits** | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) gotcha 23 (follow the `LEA` addend) |
 
 ## Interfaces
 
@@ -60,5 +62,6 @@ readings were taken.
 | [`warp_mma_fp8_ldsm`](warp_mma_fp8_ldsm.md) | FP8 `mma.sync` on sm120: cp.async -> swizzled K-major smem -> `ldmatrix` (`LDSM.16.M88.4`) -> `QMMA.16832`; census, swizzle vs linear bank conflicts, the cp.async fill counter blind spot | ✅ |
 | [`ptx_sass_census_criteria`](ptx_sass_census_criteria.md) | **Interpretation recipe**: writing PTX/SASS footprint criteria that do not mistake an instrument fault for a kernel defect; sm120 worked example on a `mma.sync` tile | ✅ |
 | [`cpasync_multistage_pipeline`](cpasync_multistage_pipeline.md) | The sm120 mainloop: cp.async into S stages, `wait_group(S-2)` + `__syncthreads`, ldmatrix + `mma.sync`; measured bf16 / e4m3 throughput vs stages, K bytes per stage, CTAs per SM | ✅ |
+| [`tma_mbarrier_mainloop`](tma_mbarrier_mainloop.md) | TMA (`make_tiled_tma_atom` + `tma_partition`) into a full / empty mbarrier ring (`PipelineTmaAsync`) feeding ldmatrix + `mma.sync`; in-loop producer vs producer warp, measured | ✅ |
 
 Status: ⬜ TODO / 🟡 draft / ✅ Verified (the example runs on sm_120 and its source is cited).
