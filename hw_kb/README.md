@@ -8,11 +8,11 @@ hw_kb/
   cutedsl/           # CuTe DSL runs (task language "cutedsl")
     README.md        # rules, layout and fill strategy
     TEMPLATE.md
-    sm90/  sm100/
+    sm90/  sm100/  sm120/
   cuda/              # CUDA C++ runs (task language "cuda")
     README.md
     TEMPLATE.md
-    sm100/
+    sm100/  sm120/
 ```
 
 A run reads and writes exactly one tree, `hw_kb/<language>/<arch>/`, picked by the task's `language`

@@ -75,7 +75,8 @@ MAX_STRIDES = 6
 MAX_CTA_WARPS = 32          # 1024 threads: the hard ceiling on any warp count
 TILE_FAMILIES = ("LDSM", "STSM")
 
-MMA_FAMILIES = ("HMMA", "HGMMA", "QGMMA", "IGMMA", "BGMMA", "IMMA", "DMMA")
+MMA_FAMILIES = ("HMMA", "HGMMA", "QGMMA", "IGMMA", "BGMMA", "IMMA", "DMMA",
+                "QMMA", "OMMA")   # QMMA/OMMA: sm_120a warp-level fp8/fp6/fp4 (incl. .SF block-scaled)
 SMEM_FAMILIES = ("LDSM", "STSM", "LDS", "STS")
 STORE_FAMILIES = ("STSM", "STS")
 LOAD_FAMILIES = ("LDSM", "LDS")
@@ -92,7 +93,8 @@ DECISIVE_FAMILIES = MMA_FAMILIES + ("LDSM", "STSM")
 _BAR_OPERANDS = re.compile(r"^(0x[0-9a-fA-F]+|\d+)\s*(?:,\s*(0x[0-9a-fA-F]+|\d+))?\s*$")
 _IMM_OFFSET = re.compile(r"\+\s*0x([0-9a-fA-F]+)\s*\]")
 # MMA input-type suffixes; an HMMA/HGMMA carrying none of them takes fp16 inputs.
-_MMA_TYPES = ("BF16", "TF32", "E4M3", "E5M2", "F8", "S8", "U8", "S4", "U4", "F64")
+_MMA_TYPES = ("BF16", "TF32", "E4M3", "E5M2", "E2M1", "E3M2", "E2M3", "F8", "S8", "U8", "S4",
+              "U4", "F64")
 
 
 def fam(opcode: str) -> str:

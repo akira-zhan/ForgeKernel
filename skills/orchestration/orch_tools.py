@@ -113,7 +113,8 @@ _CACHE_FAMS = {"LDGSTS", "UTMALDG", "UTMASTG", "CREATEPOLICY", "UBLKCP",
                "UBLKRED"}
 # Families that mark a loop as doing real work; a tiny loop with none of them
 # is a spin-wait (PHASECHK/BRA retry, NANOSLEEP backoff, drain loops).
-_WORK_FAMS = {"HGMMA", "QGMMA", "IGMMA", "BGMMA", "LDGSTS", "UTMALDG",
+_WORK_FAMS = {"HGMMA", "QGMMA", "IGMMA", "BGMMA", "HMMA", "QMMA", "OMMA", "IMMA",
+              "LDGSTS", "UTMALDG",
               "UTMASTG", "STSM", "LDSM", "STS", "STG", "LDG", "FFMA",
               "HFMA2", "MUFU"}
 _SPIN_MAX = 8
@@ -166,8 +167,14 @@ _STORE_FAMS = {"UTMASTG", "STSM"}
 _ROLE_LOOPS = ("mma-consumer", "copy-producer")
 
 
+_MMA_SYNC_FAMS = {"HMMA", "QMMA", "OMMA", "IMMA"}
+
+
 def _role_label(mix: Counter) -> str:
-    gmma = sum(v for k, v in mix.items() if k.endswith("GMMA"))
+    # warp-level mma.sync (HMMA / sm_120a QMMA / OMMA / IMMA) is an MMA issue too:
+    # on SM120 it is the ONLY tensor-core path, so a QMMA mainloop counted as
+    # "copy-producer" (it also issues LDGSTS) misnamed every consumer loop.
+    gmma = sum(v for k, v in mix.items() if k.endswith("GMMA") or k in _MMA_SYNC_FAMS)
     copy = sum(mix.get(f, 0) for f in _COPY_FAMS)
     if gmma:
         return "mma-consumer"
@@ -939,7 +946,7 @@ def _nbar_verdict(b: dict) -> str:
 
 
 def _region_line(instrs, r: Region) -> str:
-    keys = ("HGMMA", "QGMMA", "IGMMA", "LDGSTS", "UTMALDG", "UTMASTG",
+    keys = ("HGMMA", "QGMMA", "IGMMA", "HMMA", "QMMA", "OMMA", "LDGSTS", "UTMALDG", "UTMASTG",
             "LDS", "STS", "LDSM", "STSM", "SHFL", "LDG", "STG")
     mixs = " ".join(f"{k}={r.mix[k]}" for k in keys if r.mix.get(k))
     tag = f"  (was {r.base}: {r.why})" if r.base else ""
@@ -1169,12 +1176,12 @@ def _summary_from_dossier(d: dict) -> dict:
 # narrow-type families ``<shape>.<ACC>.<A>.<B>``. tcgen05 (UTC*MMA) carries its kind in
 # the instruction descriptor, a register: only the family's class is static (UTCHMMA =
 # kind::f16 / tf32, UTCQMMA = f8f6f4, UTCIMMA = i8, UTCOMMA = mxf4), the accumulator not.
-_MMA_FAMILY = re.compile(r"^(HMMA|HGMMA|QGMMA|IGMMA|BGMMA|IMMA|DMMA|UTC[A-Z0-9]*MMA)$")
+_MMA_FAMILY = re.compile(r"^(HMMA|HGMMA|QGMMA|IGMMA|BGMMA|IMMA|DMMA|QMMA|OMMA|UTC[A-Z0-9]*MMA)$")
 _MMA_TYPES = ("F64", "F32", "TF32", "BF16", "F16", "E4M3", "E5M2", "E2M1", "E3M2", "E2M3",
               "S32", "S8", "U8", "S4", "U4")
 _MMA_FAMILY_CLASS = {"DMMA": "f64", "IMMA": "i8", "IGMMA": "i8", "QGMMA": "f8", "BGMMA": "b1",
                      "UTCHMMA": "f16|bf16|tf32", "UTCQMMA": "f8f6f4", "UTCIMMA": "i8",
-                     "UTCOMMA": "mxf4"}
+                     "UTCOMMA": "mxf4", "QMMA": "f8f6f4", "OMMA": "mxf4"}
 
 
 def mma_operand_types(opcode: str) -> "Optional[Tuple[str, str]]":

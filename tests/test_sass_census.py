@@ -25,9 +25,11 @@ NCU_STYLE = """\
 
 def test_census_counts_both_forms_and_styles():
     c = census_from_text(CUOBJDUMP_STYLE)
-    assert c == {"mma_total": 3, "mma_a_reg": 2, "mma_a_desc": 1, "mma_a_other": 0}
+    assert c == {"mma_total": 3, "mma_a_reg": 2, "mma_a_desc": 1, "mma_a_other": 0,
+                 "mma_sync_total": 0}
     c2 = census_from_text(NCU_STYLE)
-    assert c2 == {"mma_total": 2, "mma_a_reg": 1, "mma_a_desc": 1, "mma_a_other": 0}
+    assert c2 == {"mma_total": 2, "mma_a_reg": 1, "mma_a_desc": 1, "mma_a_other": 0,
+                  "mma_sync_total": 0}
 
 
 def test_non_mma_instructions_do_not_count():

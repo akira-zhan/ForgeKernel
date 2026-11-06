@@ -47,6 +47,14 @@ SM90_TENSOR_FAMILIES = (
     "UTMALDG", "UTMASTG", "UTMACCTL",
     "USETMAXREG", "WARPGROUP",
 )
+# SM120 (RTX Blackwell, sm_120a) has neither wgmma nor tcgen05: its tensor cores are
+# driven by warp-level ``mma.sync``, which ptxas spells HMMA (f16/bf16/tf32), QMMA
+# (kind::f8f6f4, and ``QMMA.SF`` for the mxf8f6f4 block-scaled form) and OMMA
+# (``OMMA.SF``, the mxf4/mxf4nvf4 block-scaled form), IMMA for int8. A cp.async-fed
+# sm120 GEMM carries none of the Hopper families above (no TMA, no WARPGROUP), so
+# checking only those failed every such page with "not the tensor kernel".
+SM120_MMA_SYNC_FAMILIES = ("HMMA", "QMMA", "OMMA", "IMMA")
+TENSOR_FAMILIES = SM90_TENSOR_FAMILIES + SM120_MMA_SYNC_FAMILIES
 
 # Lines the profiler injects into its own output stream. Counting these as opcodes
 # is how a probe once reported ``opcodes={ERROR: 2}`` — the two "instructions" were
@@ -113,7 +121,7 @@ def opcode_histogram(instructions: Iterable[Instr]) -> "Counter[str]":
 
 
 def family_counts(instructions: Iterable[Instr],
-                  families: Sequence[str] = SM90_TENSOR_FAMILIES) -> "Counter[str]":
+                  families: Sequence[str] = TENSOR_FAMILIES) -> "Counter[str]":
     counts: "Counter[str]" = Counter()
     for i in instructions:
         root = i.opcode.split(".", 1)[0]
@@ -141,7 +149,7 @@ def self_check(profiled_kernel: str,
                expected_kernel: str,
                parsed: ParseResult,
                min_instructions: int = MIN_INSTRUCTIONS,
-               families: Sequence[str] = SM90_TENSOR_FAMILIES) -> List[str]:
+               families: Sequence[str] = TENSOR_FAMILIES) -> List[str]:
     """Everything that must hold before a histogram may be believed.
 
     Returns the list of violated expectations; empty means trustworthy. Each check
@@ -189,7 +197,7 @@ def analyze(sass_text: str,
             profiled_kernel: str,
             launch_pairs: Sequence[Tuple[str, float]],
             min_instructions: int = MIN_INSTRUCTIONS,
-            families: Sequence[str] = SM90_TENSOR_FAMILIES,
+            families: Sequence[str] = TENSOR_FAMILIES,
             top: int = 40) -> bool:
     """Parse, histogram, self-check, and speak the verdict line the driver gates on.
 

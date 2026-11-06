@@ -530,6 +530,10 @@ SEG_BEGIN = "=== SEGMENT LEDGER BEGIN ==="
 SEG_END = "=== SEGMENT LEDGER END ==="
 JOIN_FLOOR = 0.50   # below this the join is address-space mismatch, not a table
 MAX_SEG_ROWS = 18
+# warp-level mma.sync families (HMMA / IMMA; SM120 adds QMMA = kind::f8f6f4 and
+# OMMA = mxf4 block-scaled). Vendored copy of sched_live_tools.MMA_SYNC_FAMILIES' MMA
+# subset (vendored-standalone rule).
+_MMA_SYNC_FAMS = ("HMMA", "QMMA", "OMMA", "IMMA")
 
 
 def _sched_modules():
@@ -581,6 +585,17 @@ def _kind_of(ins, owner, idx, slt):
                 "trywait" if ("TRYWAIT" in ins.opcode or "PHASECHK" in ins.opcode)
                 else ins.opcode)
         return ("SYNCS", f"mbarrier.{kind}")
+    if f in _MMA_SYNC_FAMS:
+        # warp-level mma.sync: SM120's only tensor-core issue (QMMA / OMMA / HMMA).
+        # Left to the fall-through these were costed as "elementwise", which put an
+        # sm_120a mainloop's MMA stalls on the EW rows.
+        return ("MMA", ins.opcode)
+    if f == "LDGSTS":
+        return ("CPASYNC", ins.opcode)
+    if f in ("LDGDEPBAR", "DEPBAR"):
+        # cp.async.commit_group / wait_group (DEPBAR.LE SB0, N): the supply wait of
+        # a cp.async pipeline, not elementwise work
+        return ("CPWAIT", ins.opcode)
     if f == "NANOSLEEP":
         return ("SLEEP", "NANOSLEEP(spin)")
     if f in ("STSM", "LDSM"):
@@ -721,8 +736,10 @@ def _segment_ledger_body(report_path, kernel_substr, out, sass_text=None) -> boo
                 break
     body_tot = sum(cost.values())
     n_hg = sum(1 for s in segs if s[2] == "HG")
+    n_mma = sum(1 for s in segs if s[2] == "MMA")
     n_db = sum(1 for s in segs if s[2] == "DEPBAR")
-    out(f"[join] body {tag}: {len(segs)} segments ({n_hg} HGMMA runs, {n_db} DEPBARs); "
+    runs = f"{n_hg} HGMMA runs" + (f", {n_mma} mma.sync runs" if n_mma else "")
+    out(f"[join] body {tag}: {len(segs)} segments ({runs}, {n_db} DEPBARs); "
         f"{body_tot} samples inside, {outside} outside (prologue/epilogue)")
     if body_tot == 0:
         out("JOIN-FAIL reason=no-samples-in-body")

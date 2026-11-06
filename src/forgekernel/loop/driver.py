@@ -10457,7 +10457,7 @@ _SEG_LINE_RE = re.compile(
 # Skeleton anchors, canonical order. Kinds that wait at the loop top before the
 # first HGMMA run collapse into one anchor; EW segments aggregate by the DEPBAR
 # depth in force; DEPBARs aggregate by their own immediate.
-_SEG_WAIT_KINDS = ("SYNCS", "BAR", "SLEEP", "FENCE", "WG")
+_SEG_WAIT_KINDS = ("SYNCS", "BAR", "SLEEP", "FENCE", "WG", "CPWAIT")
 _SEG_ANCHOR_ORDER = ("loop-top wait", "first HG run", "DEPBAR 0x1", "EW@0x1",
                      "DEPBAR 0x0", "EW@0x0", "EW@none", "HG rest", "BRA", "EXIT", "other")
 
@@ -10476,7 +10476,7 @@ def _anchor_shares(seg_text: str) -> dict:
     for m in _SEG_LINE_RE.finditer(seg_text):
         kind, depth, imm, pct, stalls = (m.group(1), m.group(2), m.group(3) or "",
                                          float(m.group(4)), m.group(5))
-        if kind == "HG":
+        if kind in ("HG", "MMA"):   # MMA = warp-level mma.sync runs (SM120 QMMA/OMMA/HMMA)
             add("first HG run" if not seen_hg else "HG rest", pct, stalls)
             seen_hg = True
         elif not seen_hg and kind in _SEG_WAIT_KINDS:

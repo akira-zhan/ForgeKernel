@@ -46,6 +46,12 @@ except ImportError:  # harness-side import path
 # sass_tools.SM90_TENSOR_FAMILIES's MMA subset — TMA/…GMMA-adjacent movement ops
 # have no A/B operand semantics.
 MMA_FAMILIES = ("HGMMA", "QGMMA", "IGMMA", "BGMMA")
+# Warp-level mma.sync (HMMA / IMMA, and SM120's QMMA / OMMA -- sm_120a has no wgmma
+# and no tcgen05, so these are its only tensor-core issues). Their A and B operands
+# are ALWAYS registers (fed by LDSM / LDS), so "register vs descriptor" is not a
+# question this census can ask of them: a page that carries only these renders the
+# SKIP form, never the FAIL form that means "wrong kernel / failed parse".
+MMA_SYNC_FAMILIES = ("HMMA", "QMMA", "OMMA", "IMMA")
 
 # Operand forms. A register operand is "R<n>" (WGMMA register fragments are named
 # by their first register); a shared-memory operand is a matrix descriptor,
@@ -80,8 +86,11 @@ def census_from_text(sass_text: str,
     """SASS dump text -> {"mma_total", "mma_a_reg", "mma_a_desc", "mma_a_other"}."""
     fams = tuple(families)
     parsed = sass_tools.parse_sass(sass_text)
-    counts = {"mma_total": 0, "mma_a_reg": 0, "mma_a_desc": 0, "mma_a_other": 0}
+    counts = {"mma_total": 0, "mma_a_reg": 0, "mma_a_desc": 0, "mma_a_other": 0,
+              "mma_sync_total": 0}
     for instr in parsed.instructions:
+        if instr.opcode.split(".", 1)[0] in MMA_SYNC_FAMILIES:
+            counts["mma_sync_total"] += 1
         if not instr.opcode.startswith(fams):
             continue
         counts["mma_total"] += 1
@@ -96,6 +105,9 @@ def render_census_line(census: Dict[str, int], kernel: str) -> str:
     channel exists for, "no MMA seen" means the dump is of the wrong kernel or the
     parse silently failed — both must be visible, not read as a_reg=0.
     """
+    if census["mma_total"] == 0 and census.get("mma_sync_total"):
+        return (f"SASS-OPERANDS-SKIP kernel={kernel} reason=mma-sync-operands-are-registers "
+                f"mma_sync={census['mma_sync_total']}")
     if census["mma_total"] == 0:
         return f"SASS-OPERANDS-FAIL kernel={kernel} reason=no-mma-instructions-parsed"
     return (f"SASS-OPERANDS kernel={kernel} mma_total={census['mma_total']} "

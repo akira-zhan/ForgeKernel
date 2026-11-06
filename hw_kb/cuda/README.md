@@ -28,6 +28,9 @@ hw_kb/cuda/
   sm100/
     index.md         # SM100 (Blackwell) list; the entry point is the "Look up by symptom first" table
     <interface>.md
+  sm120/
+    index.md         # SM120 (RTX Blackwell, sm_120a: warp-level mma.sync only -- no wgmma, no tcgen05)
+    <interface>.md
 ```
 
 **One tree per architecture.** `kb_arch` comes from `[loop] kb_arch` in `operators/<op>/loop.toml` (or

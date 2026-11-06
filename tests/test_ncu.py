@@ -478,3 +478,27 @@ def test_wavefront_ratio_is_launch_count_independent():
     s = summarize_metrics(student, baseline=ref)
     assert "smem_wavefronts_vs_ref" not in {f["key"] for f in s["flags"]}
     assert "copy atom" not in s["verdict"]
+
+
+def _gb_csv(rows):
+    head = '"ID","Kernel Name","Metric Name","Metric Unit","Metric Value"\n'
+    return head + "".join(f'"0","k","{n}","{u}","{v}"\n' for n, u, v in rows)
+
+
+def test_gb20x_dram_volume_names_fill_the_same_keys():
+    """sm_120 (GB20x, GDDR7) has no dram__bytes_read/write: NCU answers them n/a and
+    the volume must come from dram__bytes_op_read/op_write instead (measured on an
+    RTX PRO 5000 with ncu 2025.3)."""
+    from forgekernel.inner.ncu import key_metrics, parse_ncu_csv
+    gb202 = _gb_csv([("gpu__time_active.sum", "ns", "2,158,656"),
+                  ("dram__bytes_read.sum", "", "n/a"), ("dram__bytes_write.sum", "", "n/a"),
+                  ("dram__bytes_op_read.sum", "byte", "4,412,160"),
+                  ("dram__bytes_op_write.sum", "byte", "4,152,064")])
+    d = key_metrics(parse_ncu_csv(gb202))
+    assert d["dram_bytes_read"] == 4412160 and d["dram_bytes_write"] == 4152064
+    # the HBM chips keep their own names; the GB20x ones come back n/a there
+    gb100 = _gb_csv([("gpu__time_active.sum", "ns", "1,000"),
+                  ("dram__bytes_read.sum", "byte", "1,024"), ("dram__bytes_write.sum", "byte", "512"),
+                  ("dram__bytes_op_read.sum", "", "n/a"), ("dram__bytes_op_write.sum", "", "n/a")])
+    d = key_metrics(parse_ncu_csv(gb100))
+    assert d["dram_bytes_read"] == 1024 and d["dram_bytes_write"] == 512

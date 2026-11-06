@@ -111,7 +111,13 @@ WGMMA_FAMILIES = ("HGMMA", "QGMMA", "IGMMA", "BGMMA")
 # The dsa_sparse B200 reference is an HMMA mainloop: it came back
 # ``SCHED-FAIL ... hgmma_runs=0 depbars=0`` six times in one day, the same
 # zeroed verdict as the tcgen05 case, for the same reason (wrong instrument).
-MMA_SYNC_FAMILIES = ("HMMA", "IMMA", "DMMA", "BMMA")
+MMA_SYNC_FAMILIES = ("HMMA", "IMMA", "DMMA", "BMMA", "QMMA", "OMMA")
+# QMMA / OMMA are SM120's (sm_120a) warp-level spellings: QMMA = mma.sync
+# kind::f8f6f4 (``QMMA.16832.F32.E4M3.E4M3``) and its mxf8f6f4 block-scaled form
+# ``QMMA.SF.16832.F32.E4M3.E4M3.E8``; OMMA = the mxf4 / mxf4nvf4 block-scaled form
+# ``OMMA.SF.16864.F32.E2M1.E2M1.UE4M3.4X``. Same per-warp, register-accumulator,
+# scoreboard-waited grammar as HMMA; the .SF forms carry two extra scale-factor
+# registers after C (``Rd, Ra, Rb, Rc, Rsfa, Rsfb, URid``).
 _TCGEN05_MMA = re.compile(r"^UTC[A-Z0-9]*MMA$")
 
 
@@ -373,7 +379,7 @@ def _mma_sync_widths(opcode: str) -> Tuple[int, int, int]:
     m = _MMA_SYNC_SHAPE.search(opcode)
     acc, a, b = _MMA_SYNC_WIDTHS.get(m.group(1) if m else "", (4, 2, 2))
     up = opcode.upper()
-    if fam_of(opcode) == "HMMA" and ".F32" not in up and ".F16" in up:
+    if fam_of(opcode) in ("HMMA", "QMMA") and ".F32" not in up and ".F16" in up:
         acc = max(1, acc // 2)          # f16 accumulator packs two per register
     return acc, a, b
 
@@ -719,6 +725,13 @@ def reg_accesses(ins) -> Tuple[set, set, bool]:
             if _PURE_REG.fullmatch(o):
                 b0 = rin(o)[0]
                 uses |= set(range(b0, b0 + w))
+        if ".SF." in ins.opcode:
+            # block-scaled (QMMA.SF / OMMA.SF): one scale-factor register for A
+            # and one for B follow C; the trailing uniform operand is the
+            # byte/thread selector and holds no vector register.
+            for o in ops[4:6]:
+                if _PURE_REG.fullmatch(o):
+                    uses.add(rin(o)[0])
     elif _TCGEN05_MMA.match(f) or f in ("UTCBAR", "UTCATOMSWS", "UTCATOM",
                                         "UTCALLOC", "UTCDEALLOC", "USETMAXREG"):
         # descriptors and TMEM addresses ride uniform registers; no vector

@@ -69,6 +69,13 @@ KEY_METRICS: dict[str, str] = {
     # product (a 132-CTA persistent grid looks identical for 128x256 and 256x128).
     "dram__bytes_read.sum": "dram_bytes_read",
     "dram__bytes_write.sum": "dram_bytes_write",
+    # The same two volumes under GB20x's (sm_120, GDDR7) names: that chip has no
+    # ``dram__bytes_read`` / ``dram__bytes_write`` (``ncu --query-metrics --chip gb202``)
+    # and NCU answers the HBM names with ``n/a`` -- the profile still succeeds, the
+    # volume just silently vanishes. Requesting both is harmless: whichever name the
+    # chip lacks comes back ``n/a``, coerces to None and never overwrites the key.
+    "dram__bytes_op_read.sum": "dram_bytes_read",
+    "dram__bytes_op_write.sum": "dram_bytes_write",
     # Launch attributes — compile/launch facts, not performance. These are what
     # make an M0 architecture gate verifiable: shared memory pins the stage
     # budget the way registers already pin setmaxregister. The agent authors the

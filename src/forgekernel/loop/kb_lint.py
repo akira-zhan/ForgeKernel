@@ -110,6 +110,20 @@ REFERENCE_TOKENS = [
     "flashmla",
     "sparse_attn_fwd_kernel",
     "deep_gemm",
+    # SM120 (sm_120a) references: the open-source kernels that sm120 operator tasks are
+    # most likely to be measured against. The flash-attention entries above already
+    # cover the CuTe DSL attention port; these add its sm_120 class and the SGLang
+    # Triton FP8 MoE / FP8 GEMM / FP8 quant kernels. derive_reference_tokens extends this
+    # per source-mode run; this list keeps entries written OUTSIDE a run (seeding the
+    # sm120 tree) from naming them.
+    "flash_fwd_sm120",
+    "FlashAttentionForwardSm120",
+    "FlashAttentionForwardSm80",
+    "fused_moe_kernel",
+    "fused_moe_triton",
+    "invoke_fused_moe_kernel",
+    "w8a8_block_fp8_matmul",
+    "per_token_group_quant",
 ]
 
 # Symbols too generic to be retrieval keys — never derived as tokens.
