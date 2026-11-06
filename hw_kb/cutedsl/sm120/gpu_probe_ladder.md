@@ -168,6 +168,9 @@ def exc_facts(stage, exc):
     fn, ln = getattr(exc, "filename", None), getattr(exc, "line", None)
     if fn:
         wrec(stage, "at", "%s:%s" % (os.path.basename(str(fn)), ln))
+    tag = re.search(r"error\[([A-Z_]+)\]", re.sub(r"\x1b\[[0-9;]*m", "", str(exc)))
+    if tag:                                            # DSL 4.8.0: the diagnostic tag lives only in the rendering
+        wrec(stage, "tag", tag.group(1))
     if not getattr(exc, "message", None):              # not a DSL exception: the rendered text is everything
         wrec(stage, "str", _one_line(exc))
     frames = [l.strip() for l in traceback.format_exc().splitlines() if l.strip().startswith("File ")]
@@ -182,7 +185,7 @@ What the three error families of CuTe DSL 4.8.0 carry (measured on sm120, see go
 
 | Raised for | Type | `.message` | Where the useful text is | `.filename` / `.line` |
 |---|---|---|---|---|
-| user-code rule at trace time (Runtime value in `const_expr`, a variable changing type across a dynamic branch) | `DSLUserCodeError` | the cause, with `error_code` such as `PHASE_REQUIRES_CONSTANT` / `TYPE_UNSTABLE_JOIN` | `.message` + `.suggestion` (a list) | **your** file and line |
+| user-code rule at trace time (Runtime value in `const_expr`, a variable changing type across a dynamic branch) | `DSLUserCodeError` | the cause; the diagnostic tag (`PHASE_REQUIRES_CONSTANT`, `TYPE_UNSTABLE_JOIN`, `SCOPE_CLOSURE_CAPTURE` ...) is **not** in `error_code` (left empty) but in the `error[TAG]` head of the rendered text | `.message` + `.suggestion` (a list) | **your** file and line |
 | IR verifier rejection (e.g. `cute.copy` between fragments of different size) | `DSLOperationBuildError` | generic: `Operation verification failed` | **`.cause`** (`MLIRError`): `'cute.copy' op expects same size in rank 1 ...` | a DSL-internal file, not yours |
 | layout algebra misuse (shape / stride not congruent) | plain `ValueError` | -- (no DSL attributes) | `str(exc)` | traceback only |
 
@@ -228,7 +231,7 @@ resolution reports an impossible clock (above the card's maximum), which is itse
    write that shared step with the same spelling, the N FAILs a round brings back carry **one** fact -- the ladder's
    whole resolution is wasted. Two fixes, pick one by situation:
    - the shared step **calls the shipped file's own constructor** instead of transcribing it (same as
-     `sm100/cute_dsl_trace_scope` gotcha 3);
+     [`cute_dsl_trace_scope`](cute_dsl_trace_scope.md) gotcha 3);
    - or, if the shared step itself is the unknown, **promote it to a swept axis** (§3).
 5. **A shape/spelling rejection is not a "does the mechanism work" problem; do not debug it as one.** For example
    `Expected source and destination tensors to have the same size in mode-1,
@@ -238,7 +241,7 @@ resolution reports an impossible clock (above the card's maximum), which is itse
    and observations like these always go through the fact channel; only contracts occupy `PROBE` verdict lines. Otherwise a round structure of 10 PASS
    and 1 FAIL loses its meaning -- whoever reads the log cannot tell "the kernel is broken" from "I just learned that
    3 of 4 candidates do not lower". The same discipline as
-   `sm100/cute_dsl_trace_scope` gotcha 4 for api-audit.
+   [`cute_dsl_trace_scope`](cute_dsl_trace_scope.md) gotcha 4 for api-audit.
 7. **Split compile-only contracts and launch contracts into two.** A failure of "can it lower" throws a Python exception with a
    **line number**; a failure of "can it launch" has **no line number**. With two contracts,
    which one the FAIL lands on is itself localisation information; merged into one, the two kinds of fault are indistinguishable.
@@ -271,7 +274,7 @@ resolution reports an impossible clock (above the card's maximum), which is itse
     see `sm100/smem_exchange_face_matrix_atoms_ldsm_mt_stsm_sw128`
     gotcha 13). Practice: comment out half of the kernel body from the middle, run one round of the compile-only contract (gotcha 7) to see whether it lives or dies, and locate the line within
     two or three rounds; cheaper still is **not building a toy geometry** -- write the probe directly on the geometry of the shipped entry
-    (`sm100/cute_dsl_trace_scope` gotcha 3); every line a toy brings along is a new way to die.
+    ([`cute_dsl_trace_scope`](cute_dsl_trace_scope.md) gotcha 3); every line a toy brings along is a new way to die.
 
 13. **Read a DSL error by attribute, and by the right attribute for its family; never by a truncated rendering.**
     On CuTe DSL 4.8.0 the rendered text of a `DSLBaseError` starts with an error tag (`error[PHASE_REQUIRES_CONSTANT]:`,
@@ -280,7 +283,9 @@ resolution reports an impossible clock (above the card's maximum), which is itse
     (table in §6): for an IR-verifier rejection `.message` is only `Operation verification failed` and the verifier's
     sentence lives in `.cause`; its `.filename` / `.line` point into the DSL, not at your line, so the rung is
     located by the ladder (gotcha 14) or by bisection (gotcha 12), not by the error. A layout shape/stride mismatch is
-    a plain `ValueError` with no attributes at all. Send `type`, `message`, `error_code`, `cause`, `suggestion` field
+    a plain `ValueError` with no attributes at all. The diagnostic tag of a user-code error (`PHASE_DYNAMIC_TO_STATIC_BOOL`,
+    `SCOPE_CLOSURE_CAPTURE` ...) is not in `error_code` (empty on 4.8.0): take it from the `error[TAG]` head of the
+    ANSI-stripped rendering. Send `type`, the tag, `message`, `cause`, `suggestion` field
     by field through `[[W]]`, keep the tail frames of the traceback verbatim, turn on `CUTE_DSL_SHOW_STACKTRACE=1`
     in the child. (On the DSL builds used for the sm90 / sm100 trees the first 150 characters of an internal error
     were a fixed "[Internal Error] ... This is a bug in the DSL" envelope; the rule -- attributes, not text -- is the same.)

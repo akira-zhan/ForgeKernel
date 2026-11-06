@@ -35,6 +35,7 @@ readings were taken.
 | **Suspicious shared memory traffic** / bank conflicts / `smem_wavefronts` over the reference | [`smem_traffic_triage`](smem_traffic_triage.md): conflict-type vs volume-type; on sm120 the bank-conflict counter equals the wavefront excess of a conflict |
 | **Want to split a register reduction chain into several accumulators / a tree**, or a kernel ported from sm100 relies on `.f32x2` (`FFMA2`) throughput, or bf16 widening (`SHF`/`LOP3`) outnumbers FP in SASS | [`reg_chain_latency_vs_issue`](reg_chain_latency_vs_issue.md): 2 chains cover latency at 1 warp/SMSP, fewest instructions win above; `.f32x2` is two scalar issues; `fma.rn.f32.bf16` |
 | **A probe's or kernel's SASS shows `UFFMA` / `ULOP3` / `USHF` where vector ops were expected** | [`gpu_probe_ladder`](gpu_probe_ladder.md) timing traps; [`reg_chain_latency_vs_issue`](reg_chain_latency_vs_issue.md) gotcha 5 (inputs provably uniform across the warp) |
+| **Not sure which compiled instance actually ran** (grid / cluster / stage count / dynamic smem), a dispatch cache may hand back the wrong executable, or a port from sm100 asks for more than 99 KiB of smem and dies at launch with `cudaErrorInvalidValue` / `invalid argument` | [`launch_identity_stamp`](launch_identity_stamp.md): the kernel stamps its own identity; 101376 B is the per-block ceiling |
 
 ## Interfaces
 
@@ -44,5 +45,6 @@ readings were taken.
 | [`gpu_probe_ladder`](gpu_probe_ladder.md) | **Interpretation recipe**: instrument engineering of multi-contract GPU probes -- one rung per process, self-contained digest, fact/verdict split, candidate sweep, two-marginal bijection, timing readings; sm120 re-checks of the CUDA-level and DSL-error rules | ✅ |
 | [`smem_traffic_triage`](smem_traffic_triage.md) | **Interpretation recipe**: smem traffic over the line -> conflict-type (bankconf over too) vs volume-type (bankconf clean); counters verified on GB202 | ✅ |
 | [`reg_chain_latency_vs_issue`](reg_chain_latency_vs_issue.md) | Register reduction chain on sm120: latency-bound at 1 warp/SMSP (2 chains suffice), issue-bound above; `.f32x2` = two scalar ops; full tree = N/2-way in SASS; `fma.rn.f32.bf16` cuts the widening | ✅ |
+| [`launch_identity_stamp`](launch_identity_stamp.md) | **Instrument**: the kernel writes trace-time constants + launch special registers (`%nctaid`, `%cluster_nctaid` vs `%nclusterid`, `%dynamic_smem_size`) into a stamp table checked cell by cell; sm120 smem ceiling behaviour | ✅ |
 
 Status: ⬜ TODO / 🟡 draft / ✅ Verified (the example runs on sm_120 and its source is cited).
