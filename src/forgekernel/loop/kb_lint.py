@@ -134,6 +134,7 @@ _DERIVE_STOPLIST = {
     # CuTe DSL idioms every warp-specialized kernel spells the same way — a KB
     # entry naming them cites the DSL, not the reference.
     "sharedstorage", "namedbarrier",
+    "storage",        # the same smem struct idiom spelled ``class Storage`` (@cute.struct)
 }
 _SOURCE_EXTS = {".py", ".cu", ".cuh", ".cc", ".cpp", ".cxx", ".hpp", ".hh", ".h"}
 _PY_DEF = re.compile(r"^\s*(?:def|class)\s+([A-Za-z_]\w{5,})", re.MULTILINE)

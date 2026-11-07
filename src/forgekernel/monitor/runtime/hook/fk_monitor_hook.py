@@ -108,11 +108,24 @@ def _tensors(obj, depth: int = 0, acc=None):
     return acc
 
 
+def _packed(x) -> bool:
+    """A float dtype with no elementwise cast or arithmetic (packed fp4 pairs, e8m0 scales):
+    ``.float()`` on one is a device-side assert that poisons the CUDA context of the bench."""
+    names = ("float4_e2m1fn_x2", "float8_e8m0fnu")
+    return any(getattr(_torch, n, None) is not None and x.dtype == getattr(_torch, n) for n in names)
+
+
 def _summary(x) -> dict:
     t = _torch
     s = {"shape": list(x.shape), "dtype": str(x.dtype).replace("torch.", ""),
          "numel": int(x.numel())}
     if x.numel() == 0:
+        return s
+    if _packed(x):
+        v = x.detach().contiguous().view(t.uint8).to(t.int64)     # checksums of the raw bytes
+        s["packed"] = True
+        s["sum"] = float(v.sum().item())
+        s["zeros"] = int((v == 0).sum().item())
         return s
     if x.is_floating_point() or x.is_complex():
         f = x.detach()
@@ -321,7 +334,8 @@ def _perturb(x):
     prof = _state["profile"]
     t = _torch
     try:
-        if not isinstance(x, t.Tensor) or not x.is_floating_point() or x.numel() < MIN_NUMEL:
+        if not isinstance(x, t.Tensor) or not x.is_floating_point() or x.numel() < MIN_NUMEL \
+                or _packed(x):      # scaling / spiking packed codes has no value meaning
             return x
         with t.no_grad():
             if prof in SCALE:

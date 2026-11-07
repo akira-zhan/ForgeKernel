@@ -638,3 +638,24 @@ def test_finish_monitor_never_raises(tmp_path):
     assert _run_finish_monitor(ctx, Broken(""), tmp_path, {"sha": "x", "jobs": []},
                                summary, ("base",), "kernel.py") is None
     assert "correctness_monitor" not in summary
+
+
+def test_hook_snapshot_and_perturb_skip_packed_fp4_bytes():
+    """``.float()`` on a packed fp4 pair (or an e8m0 scale) is a device-side assert on CUDA
+    that poisons the bench's context: every profile of an NVFP4 card then read ``card False``
+    with no cases. The hook checksums the raw bytes and leaves packed codes unperturbed."""
+    torch = pytest.importorskip("torch")
+    fp4 = getattr(torch, "float4_e2m1fn_x2", None)
+    if fp4 is None:
+        pytest.skip("torch without float4_e2m1fn_x2")
+    sys.path.insert(0, str(Path(monitor.__file__).parent / "runtime" / "hook"))
+    try:
+        import fk_monitor_hook as H
+    finally:
+        sys.path.pop(0)
+    H._torch = torch
+    H._state["profile"] = "amp"
+    x = torch.arange(256, dtype=torch.uint8).repeat(8).view(64, 32).view(fp4)
+    s = H._summary(x)
+    assert s["packed"] is True and s["sum"] == float(8 * sum(range(256))) and s["zeros"] == 8
+    assert H._perturb(x) is x
