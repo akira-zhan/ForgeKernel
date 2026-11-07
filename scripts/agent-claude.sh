@@ -32,7 +32,14 @@ fi
 HERE="$(dirname "${BASH_SOURCE[0]}")"
 PY="${FK_AGENT_PY:-python3}"
 
-ARGS=(--dangerously-skip-permissions)
+if [ -n "${FK_AGENT_ALLOWED_TOOLS:-}" ]; then
+    # A managed (organization) policy can disable bypassPermissions mode outright; the flag
+    # below is then ignored and every Write / Read outside the cwd is refused in -p mode.
+    # Name the tools instead: the policy's own deny / ask rules still apply on top.
+    ARGS=(--allowedTools "$FK_AGENT_ALLOWED_TOOLS")
+else
+    ARGS=(--dangerously-skip-permissions)
+fi
 if [ -n "$EFFORT" ]; then
     ARGS+=(--effort "$EFFORT")
 fi

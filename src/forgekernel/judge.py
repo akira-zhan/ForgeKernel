@@ -39,7 +39,7 @@ GROUPS = "groups.json"
 ATTEMPTS = 3
 
 DTYPES = ("float64", "float32", "float16", "bfloat16", "float8_e4m3fn", "float8_e5m2",
-          "int64", "int32", "int16", "int8", "bool")
+          "float4_e2m1fn_x2", "int64", "int32", "int16", "int8", "bool")   # fp4: the runtime's torch_dtype packs it
 # safetensors header dtype codes -> the signature's names
 _ST_DTYPES = {"F64": "float64", "F32": "float32", "F16": "float16", "BF16": "bfloat16",
               "F8_E4M3": "float8_e4m3fn", "F8_E5M2": "float8_e5m2", "I64": "int64",
