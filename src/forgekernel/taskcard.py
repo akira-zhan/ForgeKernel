@@ -20,6 +20,7 @@ readable.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import tomllib
@@ -36,7 +37,9 @@ KERNEL_FILE = {"cutedsl": "kernel.py", "cuda": "kernel.cu"}
 CUTE_ARCH = {"sm90": "sm_90a", "sm100": "sm_100a", "sm103": "sm_103a", "sm120": "sm_120a"}
 EVAL_FILES = ("leaderboard.py", "timing.py", "precision.py", "closed_ref.py", "ncu_probe.py")
 NCU_PROBE_MODE = "cmd:ncu --csv --metrics gpu__time_active.sum python3 eval/ncu_probe.py"
-JOB_TIMEOUT_S = 1800
+# one GPU job's wall clock; a long workload priced over many lever variants can need more
+# (sm120 attention, b1 s16k: 12+ variant timings outran 1800 s). FK_JOB_TIMEOUT_S overrides.
+JOB_TIMEOUT_S = int(os.environ.get("FK_JOB_TIMEOUT_S") or 1800)
 FIRST_SEED = 1000
 BRANCH = "main"
 
