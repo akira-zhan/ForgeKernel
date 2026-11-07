@@ -438,6 +438,15 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
     mainloop `bare` 1, its fenced build 0; the CUTLASS C++ sm120 TMA warp-specialized GEMM page `barrier-only` 2 (its
     mainloop; its tile-scheduler pipeline fences after its `LDS` and is not listed); cp.async pages 0. What a `bare`
     release costs: [`blockscaled_mma`](blockscaled_mma.md) gotcha 1 (782 of 1000 launches wrong).
+25. **On sm120 the register-allocation drift of gotcha 12 can change a `rings` *value*, not only make a ring vanish.**
+    Inserting `setmaxregister_decrease / _increase` into a producer-warp + consumer-warps TMA kernel, with the
+    mbarrier ring source untouched, took `rings` from `["stride=0x180", "stride=0x4,wrap=mask", "stride=0x5,wrap=mask"]`
+    to `["stride=0x18024,wrap=mask", "stride=0x4,wrap=mask", "stride=0x5,wrap=mask"]`. In the same census `loops`,
+    `mbar_objs`, `mbar_tiers`, `mbar_per_role` and `edges` moved, and `cache_ops` / `commit` did not. Removing the
+    instructions put back the exact earlier census. So the "value change counts as a footprint" clause of gotcha 12
+    applies only while the count axes stay put. A changed stride or wrap together with moving count axes, on a patch
+    that did not touch the ring, is the allocator. The register split itself:
+    [`setmaxnreg_role_split`](setmaxnreg_role_split.md).
 
 ## Sources
 
@@ -490,3 +499,8 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
   (`test_fenced_tma_mainloops_have_no_cross_proxy_release`, `test_unfenced_release_is_nominated_bare`,
   `test_cutlass_sm120_mainloop_release_is_barrier_only`, `test_no_cross_proxy_release_without_mbarrier_releases`,
   `test_report_lists_the_nomination`). PTX ISA 8.6 "Proxies": https://docs.nvidia.com/cuda/parallel-thread-execution/
+- Gotcha 25: dossier censuses of two KEEP evaluations, one per direction. The insert was the KEEP in job 1794048999
+  (census job 1794049092), axis `rings` `["stride=0x180", "stride=0x4,wrap=mask", "stride=0x5,wrap=mask"]` ->
+  `["stride=0x18024,wrap=mask", "stride=0x4,wrap=mask", "stride=0x5,wrap=mask"]`, gate 5.2769 -> 5.7694 ms. The
+  removal was the KEEP in job 1794049160 (census job 1794049253), the same axis back, gate 5.7694 -> 5.2881 ms. There
+  is no `max_diff` probe: this is a reading recipe, and the evidence is the dossier readings.

@@ -1,0 +1,18 @@
+# sm120_attn_fwd -- causal GQA attention forward (bf16, head_dim 128) on the RTX PRO 5000 (sm_120a: warp-level
+# mma.sync only). Reference: cuDNN through torch SDPA, the fastest of the libraries measured on this card
+# (cuDNN 211, FlashAttention backend 206, FA4 sm120 195 TFLOPS at B4 S4096 -- ~72 % of the bf16 mma.sync peak).
+
+[task]
+language = "cutedsl"
+arch     = "sm120"
+
+[reference]
+run    = "reference/run.py:run"
+source = "reference"
+
+[target]
+ratio = 1.1
+
+[budget]
+hours    = 4
+max_meta = 3
