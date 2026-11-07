@@ -121,6 +121,27 @@ What the table means for a plan:
 | Back-to-back stream launches | 1.65 us |
 | Same kernels captured in one CUDA graph | 0.41 us |
 
+## Library reference ceilings (4096^3 GEMM, bf16 output)
+
+INFO (median of 50 launches, clocks unlocked; `probes/sm120/device_facts/ref_ceilings.py`, torch 2.14.1 + CUDA 13.0):
+the bar a hand-written sm120 mainloop is compared against.
+
+| Kind | Library | TFLOPS | Best hand-written mainloop here |
+|---|---|---|---|
+| bf16 | cuBLAS (`torch.matmul`) | 228 | 249 (CuTe DSL `tma_mbarrier_mainloop`) |
+| e4m3 | cuBLASLt per-tensor / rowwise (`torch._scaled_mm`) | 420 / 447 | 468 (CuTe DSL `tma_mbarrier_mainloop`) |
+| e4m3 | CUTLASS sm120 (`sgl_kernel.fp8_scaled_mm`, rowwise) | 450 | |
+| mxf8 (e8m0 / 32) | cuBLASLt (`torch._scaled_mm`) | 416 | 275 (CuTe DSL `blockscaled_mma`) |
+| nvf4 (ue4m3 / 16) | cuBLASLt (`torch._scaled_mm`) | 741 | 537 (CuTe DSL `blockscaled_mma`) |
+| mxf4 (e8m0 / 32) | `torch._scaled_mm` | rejected ("Invalid scaling configuration") | 518 |
+
+How to read it: the plain bf16 / e4m3 mainloops already match the libraries (the hand-written ones write fp32 C and
+apply no scale, so the comparison is approximate). The block-scaled probe of this tree trails cuBLASLt by 1.4-1.5x,
+but that is the probe's per-thread scale loads, not a ceiling: the ForgeKernel pilot run on
+`tasks/sm120_nvfp4_gemm` (one student iteration: persistent CTA, TMA of A / B **and** the blocked scales into smem,
+`OMMA.SF` from ldmatrix + LDS scales, stmatrix + TMA-store epilogue, proxy fence before each stage release) matched
+cuBLASLt bit for bit and ran 1.016x it in the same job (square4k 0.165 ms vs 0.168 ms, wide8k 0.672 vs 0.684 ms).
+
 ## Gotchas
 
 - **Clocks are not fixed**: the attribute says 2377 MHz, the card ran 2.58-2.63 GHz under these loads (max SM clock

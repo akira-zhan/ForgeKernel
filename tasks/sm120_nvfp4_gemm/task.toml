@@ -1,0 +1,17 @@
+# sm120_nvfp4_gemm -- pilot task for the sm120 tree: an NVFP4 block-scaled GEMM on the RTX PRO 5000
+# (sm_120a, warp-level mma.sync only: no wgmma / tcgen05). Reference: cuBLASLt through torch._scaled_mm.
+
+[task]
+language = "cutedsl"
+arch     = "sm120"
+
+[reference]
+run    = "reference/run.py:run"
+source = "reference"
+
+[target]
+ratio = 1.0                          # match cuBLASLt (741 TFLOPS at 4096^3 measured)
+
+[budget]
+hours    = 4
+max_meta = 2
