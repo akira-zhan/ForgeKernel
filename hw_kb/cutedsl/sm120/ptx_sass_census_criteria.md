@@ -406,7 +406,11 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
     (`DEPBAR.LE SB0, N`) is read as `CPWAIT {LE N xK}` -- a 2-stage and a 3-stage pipeline differ only there (`0x0` vs
     `0x1`). Before this, the axis read `DEPBAR {}` for both: the depth change was invisible. `DEPBAR.LE SB0` also
     follows bulk TMA stores (`UTMASTG` + `UTMACMDFLUSH`, no `LDGDEPBAR` in the loop); read the two cases apart by the
-    `LDGDEPBAR` count of the same row.
+    `LDGDEPBAR` count of the same row. On the bulk-store side the term is `LE 0x<B-1> xK` for
+    `cp_async_bulk_wait_group(B - 1, read=True)` once per unrolled store sub-tile (K = sub-tiles per tile), next to
+    `LE 0x0 x1` for the final drain: staging depth B = 2 vs 4 read `LE 0x1 x8` vs `LE 0x3 x8`, in both directions
+    (KEEP in job 1794023369 and KEEP in job 1794030395). The knob and its (null) price:
+    [`tma_store_wait_depth`](tma_store_wait_depth.md).
 
 23. **An address chain must follow the operand that carries the offset, not the one that shares the destination's
     name.** sm120 mbarrier (and other shared-window) addresses are `ULEA Ud, Ua, Ub, 0x18` = `(Ua << 24) + Ub` with

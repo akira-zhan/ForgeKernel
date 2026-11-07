@@ -1,0 +1,14 @@
+[task]
+language = "cutedsl"
+arch = "sm120"
+
+[reference]
+run = "reference/kernel.py:run"
+source = "reference"
+
+[target]
+ratio = 1.05
+
+[budget]
+hours = 4
+max_meta = 2
