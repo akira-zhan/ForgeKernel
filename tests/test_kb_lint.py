@@ -277,3 +277,13 @@ def test_kb_lint_cli_prints_derived_tokens_and_missing_oracle_paths(tmp_path, ca
     rc = main([str(kb), "--oracle", str(a)])
     out = capsys.readouterr().out
     assert rc == 1 and "fused_rule_kernel" in out
+
+
+def test_derived_token_floor_ignores_leading_underscores(tmp_path):
+    """A private helper ``_chain`` is the 5-letter word "chain"; as a substring token it hit
+    reg_chain_latency_vs_issue.md and stopped an sm120 self-evolution run before it began."""
+    o = tmp_path / "ref"
+    o.mkdir()
+    (o / "kernel.py").write_text("def _chain(x, n):\n    return x\n\ndef load_kstep(a):\n    return a\n")
+    toks = derive_reference_tokens(o)
+    assert "_chain" not in toks and "load_kstep" in toks

@@ -193,7 +193,11 @@ def derive_reference_tokens(
         stem = low.rsplit(".", 1)[0] if "." in low else low
         if low.startswith("__"):          # dunders (__init__, __post_init__, __call__)
             return
-        if len(name) >= 6 and stem not in _DERIVE_STOPLIST and low not in seen:
+        # the length floor applies to the name without its leading underscores: a private
+        # helper ``_chain`` is the 5-letter word "chain", which a substring match finds
+        # inside unrelated KB names (reg_chain_latency_vs_issue stopped an sm120 run)
+        if (len(name.lstrip("_")) >= 6 and stem.lstrip("_") not in _DERIVE_STOPLIST
+                and low not in seen):
             seen.add(low)
             tokens.append(name)
 
