@@ -159,6 +159,11 @@ timed L2-cold: an FP8 weight of 58.7 MB fits the 96 MB L2, so warm repeated call
 - Result: 1.49x the library in forge's device window (3 same-card jobs; M = 1 / 16 up 1.54 / 1.50x, M = 64 up 1.27x,
   M = 16 down 1.67x), 1.13-1.48x per call with launch latency included (my cold re-timing); bit-exact against an
   fp32 reference within bf16 rounding and exact on selector inputs for M in 1..128.
+- **NVFP4 transfers**: cuBLASLt's nvfp4 decode GEMM (torch._scaled_mm, M = 1-64) reads 45-50 % of DRAM bandwidth
+  L2-cold. The same recipe -- M-sized CTA tile, TMA ring, stream-K with the cross-CTA fixup of
+  CuTe DSL `streamk_cross_cta_fixup` -- reached 1.47x in forge's device window in one run
+  (`tasks/sm120_nvfp4_decode_gemm`; M = 1 / 16 up 1.57 / 1.52x, M = 64 up 1.30x, M = 16 down 1.52x) and
+  1.22-1.43x per call with launch latency; exact on selector inputs, bit-identical over 50 launches; M <= 64 only.
 
 ## Gotchas
 

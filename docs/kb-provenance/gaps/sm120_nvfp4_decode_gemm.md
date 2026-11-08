@@ -1,0 +1,12 @@
+# Out-of-run gap queue (recon-table rows this run did not verify: sm120_nvfp4_decode_gemm)
+
+Rows with VERIFY `none` have no machine-read acceptance; rows that say "may not be expressible" without an `[EXPR:]` ladder verdict are unverified guesses; rows with VERIFY `inferred` are structural readings whose discriminating observation gave no positive reading (the two readings are byte-identical). None of the three may be used as a conclusion. These rows are the recon's reading of the reference's structure (narrated provenance) and **do not enter hw_kb**: only a probe-certified recipe carries knowledge across runs; to verify one, start a separate probe, with the evidence under `docs/kb-provenance/`.
+
+- **wait-target alignment** = the full wait for **tile i+1** is issued in iteration i after `BAR 0x7`, with ~9 OMMAs of tile i before it and ~6 after. The empty arrive for stage i precedes the last ~15 OMMAs of tile i (operands already in registers). Prologue pre-warm = 2 stages — VERIFY `none`; notes: build guidance, see report §2d (no machine-read verification in this run)
+- **tile bM** = 16 for m ≤ 16 (1 m16 row block); 64 for m = 64 — VERIFY `none` (no machine-read verification in this run)
+- **tile bN / bK** = bN = 128 (or 64); bK = 256 — VERIFY `none` (no machine-read verification in this run)
+- **stages** = 4–6 B stages. The A tile shrinks from 16 KiB to 2 KiB (bM = 16), so per stage ≈ 16 + 2 + 2 + 0.25 KiB → 5 stages ≈ 100 KB fits only at bN = 128 if the epilogue staging is shared; 4 stages ≈ 82 KB is safe — VERIFY `none` (no machine-read verification in this run)
+- **work decomposition** = up: 112 N tiles × split-K 2 = 224 units (or bN = 64 → 224 tiles), with stream-K or uneven splits to remove the 112-on-110 tail. down: 32 N tiles × split-K 3–4 = 96–128 units — VERIFY `none` (no machine-read verification in this run)
+- **warp roles** = 1 TMA warp + 4–8 MMA warps. With bM = 16 each MMA warp owns an N slice (16 × 16…32) — VERIFY `none` (no machine-read verification in this run)
+- **register split** = producer ~40, consumers ≤ 232. Accumulators shrink (bM = 16 → 4–8 chains per warp) — VERIFY `none` (no machine-read verification in this run)
+- **supply / cache** = TMA as in C1, no cache hint (matches the reference). An evict-first hint on B is a possible later knob (`LoadCacheMode.STREAMING` / `cache_policy` exist) — VERIFY `none` (no machine-read verification in this run)
