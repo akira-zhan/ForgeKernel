@@ -142,6 +142,22 @@ but that is the probe's per-thread scale loads, not a ceiling: the ForgeKernel p
 `OMMA.SF` from ldmatrix + LDS scales, stmatrix + TMA-store epilogue, proxy fence before each stage release) matched
 cuBLASLt bit for bit and ran 1.016x it in the same job (square4k 0.165 ms vs 0.168 ms, wide8k 0.672 vs 0.684 ms).
 
+## Decode GEMM (small M) on this card -- what the library leaves
+
+INFO, from the forge run on `tasks/sm120_fp8_decode_gemm` (FP8 rowwise, N x K = 14336 x 4096 / 4096 x 14336, M = 1-64,
+timed L2-cold: an FP8 weight of 58.7 MB fits the 96 MB L2, so warm repeated calls overstate a decode GEMM):
+
+- **The CUTLASS sm120 FP8 kernel (sgl_kernel.fp8_scaled_mm) tiles M at 128 for every M** (128 x 128 x 128), so at
+  decode it loads and multiplies up to 127 zero rows per tile: 46-54 % of DRAM bandwidth, i.e. FP8 decode barely
+  beats the bf16 cuBLAS one (85-93 %). Sizing the CTA's M extent to the workload (bM = the smallest of 16 / 32 / 64 /
+  128 that is >= M; the A TMA box shrinks with it and the freed smem deepens the ring) was worth, as an ablation
+  upper bound, +36 % (M = 1), +29 % (M = 16), +8 % (M = 64).
+- **N = 14336 at bN = 128 is 112 tiles on 110 SMs**: one CTA per SM leaves a 2-tile second wave (ablation upper bound
+  +17.5 % on the up shapes). Not addressed by the run below; the next lever for these shapes.
+- Result: 1.49x the library in forge's device window (3 same-card jobs; M = 1 / 16 up 1.54 / 1.50x, M = 64 up 1.27x,
+  M = 16 down 1.67x), 1.13-1.48x per call with launch latency included (my cold re-timing); bit-exact against an
+  fp32 reference within bf16 rounding and exact on selector inputs for M in 1..128.
+
 ## Gotchas
 
 - **Clocks are not fixed**: the attribute says 2377 MHz, the card ran 2.58-2.63 GHz under these loads (max SM clock

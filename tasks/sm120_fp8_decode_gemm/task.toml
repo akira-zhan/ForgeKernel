@@ -1,0 +1,22 @@
+# sm120_fp8_decode_gemm -- small-M (decode) FP8 rowwise-scaled GEMM on the RTX PRO 5000 (sm_120a).
+# Memory-bound: the weight read dominates. On this card bf16 decode GEMMs reach 85-93 % of DRAM bandwidth but the
+# fastest FP8 one (CUTLASS sm120 via sgl_kernel.fp8_scaled_mm) only 50-67 %, so FP8 barely beats bf16 at decode.
+# Ideal at 90 % bandwidth is ~1.7x the reference; the target asks for 1.3x. Timed L2-cold (l2 = "cold"): an FP8
+# weight of 14336 x 4096 is 58.7 MB, inside the 96 MB L2, so repeated warm calls read it from L2 and overstate a
+# decode GEMM, where every layer's weights come from DRAM (first run, warm: 1.39x; the same kernel cold: 1.23-1.29x).
+
+[task]
+language = "cutedsl"
+arch     = "sm120"
+
+[reference]
+run    = "reference/run.py:run"
+source = "reference"
+
+[target]
+ratio = 1.3
+l2    = "cold"
+
+[budget]
+hours    = 4
+max_meta = 3
