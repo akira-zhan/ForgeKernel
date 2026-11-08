@@ -447,6 +447,20 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
     applies only while the count axes stay put. A changed stride or wrap together with moving count axes, on a patch
     that did not touch the ring, is the allocator. The register split itself:
     [`setmaxnreg_role_split`](setmaxnreg_role_split.md).
+26. **Re-shaping a role's loops moves both `rings` and `commit` even when no ring or wait call changed.** A KEEP that
+    changed only the loop structure of a TMA producer warp + consumer warps kernel (producer: grid-stride tile loop
+    with a nested k loop -> one flat loop over (tile, k-tile) units; consumer: tile loop -> loop over pieces, plus a
+    cross-CTA fixup) left the `PipelineTmaAsync` ring source and the two bulk-store waits untouched, and the census
+    read `rings` `[]` -> `["stride=0x1,wrap=sel"]` and `commit` `mma-consumer: DEPBAR {} LDGDEPBAR x0 CPWAIT
+    {LE 0x1 x4}` -> `{LE 0x0 x1, LE 0x1 x4}`. `loops`, `mbar_objs`, `mbar_tiers`, `mbar_per_role`, `edges` and
+    `merge` moved in the same census; `cache_ops` did not. How to read the two terms: the ring appearing is gotcha 12
+    (count axes moved, so codegen). The new `LE 0x0 x1` is the final `cp_async_bulk_wait_group(0, read=True)` drain
+    after the consumer's outer loop, present in both trees and now counted inside a consumer region (gotcha 11's
+    region rule, here with `loops` non-empty on both sides); the per-sub-tile `LE 0x1 x4` term, the actual depth
+    knob ([`tma_store_wait_depth`](tma_store_wait_depth.md)), did not change. So a `commit` row that **gains** a
+    `LE 0x0 x1` term is not a depth change unless the source added a `wait_group(0)`; compare the `LE 0x<N>` terms
+    that were already there. The gate moved −8.2 % on that KEEP, from the decomposition and not from either axis:
+    [`streamk_cross_cta_fixup`](streamk_cross_cta_fixup.md) "Census footprint".
 
 ## Sources
 
@@ -504,3 +518,7 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
   `["stride=0x18024,wrap=mask", "stride=0x4,wrap=mask", "stride=0x5,wrap=mask"]`, gate 5.2769 -> 5.7694 ms. The
   removal was the KEEP in job 1794049160 (census job 1794049253), the same axis back, gate 5.7694 -> 5.2881 ms. There
   is no `max_diff` probe: this is a reading recipe, and the evidence is the dossier readings.
+- Gotcha 26: dossier census of the KEEP in job 1794113794 (census job 1794113821), axis `rings` `[]` ->
+  `["stride=0x1,wrap=sel"]`, axis `commit` `CPWAIT {LE 0x1 x4}` -> `{LE 0x0 x1, LE 0x1 x4}`, gate 0.0597 ->
+  0.0548 ms; the unchanged wait calls are read from the source of both trees. Correctness of the restructured kernel:
+  probe `notes/streamk_fixup_probe.py`, `PROBE PASS` 24/24 after 1 round, job 1794113745.

@@ -153,7 +153,9 @@ timed L2-cold: an FP8 weight of 58.7 MB fits the 96 MB L2, so warm repeated call
   128 that is >= M; the A TMA box shrinks with it and the freed smem deepens the ring) was worth, as an ablation
   upper bound, +36 % (M = 1), +29 % (M = 16), +8 % (M = 64).
 - **N = 14336 at bN = 128 is 112 tiles on 110 SMs**: one CTA per SM leaves a 2-tile second wave (ablation upper bound
-  +17.5 % on the up shapes). Not addressed by the run below; the next lever for these shapes.
+  +17.5 % on the up shapes). Generation 2 removed it with stream-K ([`streamk_cross_cta_fixup`](streamk_cross_cta_fixup.md)): 1.088x generation 1
+  (3 same-card jobs), i.e. ~1.62x the library in the device window, 1.25-1.51x per call L2-cold with launch latency;
+  that kernel serves M <= 64 only (it raises for larger M; generation 1 serves 1..128).
 - Result: 1.49x the library in forge's device window (3 same-card jobs; M = 1 / 16 up 1.54 / 1.50x, M = 64 up 1.27x,
   M = 16 down 1.67x), 1.13-1.48x per call with launch latency included (my cold re-timing); bit-exact against an
   fp32 reference within bf16 rounding and exact on selector inputs for M in 1..128.

@@ -1,0 +1,15 @@
+[task]
+language = "cutedsl"
+arch = "sm120"
+
+[reference]
+run = "reference/kernel.py:run"
+source = "reference"
+
+[target]
+ratio = 1.08
+l2 = "cold"
+
+[budget]
+hours = 4
+max_meta = 3
