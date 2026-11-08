@@ -2340,21 +2340,37 @@ def _task_side(problem: dict, sets: list, kernel, kernel_dps: bool, ref=None,
     the reference when one is timed."""
     import timing
 
-    def calls(fn, dps, inp):
+    def calls(fn, dps, inp, copies):
         if fn is None:
             return None
         outs = allocate_outputs(problem, device) if dps else []
-        return [lambda: fn(*inp, *outs)]
+        return [lambda c=c: fn(*c, *outs) for c in copies]
+
+    def l2_copies(inp):
+        # problem "l2": "cold" -- a memory-bound kernel whose inputs fit in L2 reads them from L2
+        # on every repeated call; rotate enough copies (the same copies for kernel and
+        # reference) that one sweep exceeds twice the L2 size, so each call reads from DRAM.
+        if problem.get("l2") != "cold":
+            return [inp]
+        nbytes = sum(x.numel() * x.element_size() for x in inp if hasattr(x, "element_size"))
+        l2 = getattr(torch.cuda.get_device_properties(device), "L2_cache_size", 0) or 0
+        if nbytes <= 0 or l2 <= 0:
+            return [inp]
+        n = min(64, max(1, -(-2 * l2 // nbytes)))
+        return [inp] + [[x.clone() if hasattr(x, "clone") else x for x in inp] for _ in range(n - 1)]
 
     groups = [g["name"] for g in task_groups(problem)]
-    work = [(name, calls(kernel, kernel_dps, inp), calls(ref, ref_dps, inp))
-            for name, inp in zip(groups, sets)]
+    work = []
+    for name, inp in zip(groups, sets):
+        copies = l2_copies(list(inp))
+        work.append((name, calls(kernel, kernel_dps, inp, copies), calls(ref, ref_dps, inp, copies)))
     result = timing.measure_windows_workloads(work, burn_in_s=BURN_IN_S)
     block = timing.workloads_performance(result)
     block["device_window_basis"] = BASIS_PLAIN
     block["leaderboard"] = {
         "suite": SUITE_TASK, "upstream": UPSTREAM[SUITE_TASK], "timer": "timing.py",
-        "protocol": {"aggregate": "geomean over input groups", "window": problem.get("timing")},
+        "protocol": {"aggregate": "geomean over input groups", "window": problem.get("timing"),
+                     "l2": problem.get("l2", "warm")},
         "reading": "geometric mean over the shape's input groups of timing.py's windows",
         "kernel_per_set_ms": [_round(w.get("device_median_ms")) for w in block["workloads"]],
         "ref_per_set_ms": [_round(w.get("ref_device_ms")) for w in block["workloads"]

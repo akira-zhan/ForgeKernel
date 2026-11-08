@@ -83,6 +83,7 @@ LANGUAGES = ("cutedsl", "cuda")
 # The loop's own language name for each task language (forgekernel.loop.lang_mode).
 LOOP_LANGUAGE = {"cutedsl": "cutedsl", "cuda": "cuda-sol"}
 TIMINGS = ("device", "e2e")
+L2_MODES = ("warm", "cold")
 BACKENDS = ("claude",)
 ROLES = ("teacher", "student")
 MIN_INPUT_GROUPS = 3
@@ -109,7 +110,7 @@ _MODULE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.-]*$")
 _KEYS = {
     "task": {"language", "arch"},
     "reference": {"run", "source", "blackbox", "deny", "deny_urls", "deny_modules"},
-    "target": {"ratio", "ms", "timing"},
+    "target": {"ratio", "ms", "timing", "l2"},
     "agent.role": {"backend", "provider", "model", "effort", "timeout_s"},
     "budget": {"hours", "max_meta", "reference_hours"},
     "leaderboard": {"suite", "card", "ref"},
@@ -169,6 +170,7 @@ class Target:
     ratio: float | None
     ms: float | None
     timing: str
+    l2: str = "warm"   # warm | cold: cold rotates input copies past 2x L2 when timing
 
 
 @dataclass(frozen=True)
@@ -643,8 +645,11 @@ def _read_target(cfg: dict, problems: list[str]) -> Target:
     timing = t.get("timing")
     if timing not in TIMINGS:
         problems.append(f"[target] timing must be one of {list(TIMINGS)}, got {timing!r}")
+    l2 = t.get("l2", "warm")
+    if l2 not in L2_MODES:
+        problems.append(f"[target] l2 must be one of {list(L2_MODES)}, got {l2!r}")
     return Target(ratio=float(ratio) if _positive(ratio) else None,
-                  ms=float(ms) if _positive(ms) else None, timing=timing)
+                  ms=float(ms) if _positive(ms) else None, timing=timing, l2=l2)
 
 
 def _read_agent(agents: dict, role: str, problems: list[str]) -> AgentSpec:

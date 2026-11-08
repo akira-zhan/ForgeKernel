@@ -85,6 +85,7 @@ def card_problem(task, check, *, reference_impl: dict | None = None,
                                              "name": "the judge (not timed)"},
         "time_reference": reference_impl is not None,
         "timing": task.target.timing,
+        "l2": task.target.l2,
         "tolerance": {"outputs": dict(tolerance or {}),
                       "rule": "max|y - judge| / max|judge| per output, never below two units "
                               "of the output dtype's rounding"},

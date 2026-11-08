@@ -226,3 +226,18 @@ def test_bad_deny_urls_and_modules_are_refused(tmp_path, line, msg):
     toml = WITH_REF + line + "\n"
     with pytest.raises(TaskError, match=msg):
         load_task(_task(tmp_path, toml, files=REF_FILES), kb_root=_kb(tmp_path))
+
+
+def test_target_l2_defaults_warm_and_accepts_cold(tmp_path):
+    """[target] l2: "warm" (default) times repeated calls on one input set; "cold" makes the
+    card rotate input copies past 2x L2 so a memory-bound kernel whose inputs fit in L2 is
+    timed reading DRAM, as in a model where every layer's weights are new to the cache."""
+    t = load_task(_task(tmp_path / "a", MINIMAL), kb_root=_kb(tmp_path / "a"))
+    assert t.target.l2 == "warm"
+    t = load_task(_task(tmp_path / "b", MINIMAL + '[target]\nratio = 1.3\nl2 = "cold"\n'),
+                  kb_root=_kb(tmp_path / "b"))
+    assert t.target.l2 == "cold"
+    with pytest.raises(TaskError) as e:
+        load_task(_task(tmp_path / "c", MINIMAL + '[target]\nratio = 1.3\nl2 = "hot"\n'),
+                  kb_root=_kb(tmp_path / "c"))
+    assert "l2 must be one of" in str(e.value)
