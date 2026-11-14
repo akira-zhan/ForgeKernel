@@ -644,7 +644,7 @@ def _mma_sync_report(instrs, census, out) -> Tuple[bool, bool]:
         out("[sched] raw samples for debugging:")
         for ins in body[:12]:
             out(f"    {ins.addr}  {ins.opcode} {ins.operands[:60]}")
-    ok_b = _liveness_report(body, owner, out)
+    ok_b = _liveness_report(body, owner, out, mma_sync=True)
     return ok_a, ok_b
 
 
@@ -932,10 +932,23 @@ def report(sass_text: str, out=print) -> Tuple[bool, bool]:
     return ok_a, ok_b
 
 
-def _liveness_report(body, owner, out) -> bool:
+# The smallest mma.sync accumulator fragment a thread holds: 2 registers (an
+# m16n8 F16 accumulator; an F32 / S32 one is 4).
+MMA_SYNC_ACC_FLOOR = 2
+
+
+def _liveness_report(body, owner, out, mma_sync: bool = False) -> bool:
     """The §2e half: register-liveness over the doubled body. ISA-independent —
     tcgen05 keeps its accumulator in TMEM rather than registers, which changes
-    what the peak is made of, not how it is measured."""
+    what the peak is made of, not how it is measured.
+
+    What differs per ISA is the floor that says "the walk saw the accumulators".
+    A wgmma warpgroup carries its whole accumulator in registers, so a peak under
+    96 there means the walk missed it. An mma.sync warp holds 2-4 registers per
+    issue: a small-M decode mainloop peaks at 33-66 and a one-tile loop at 23-27
+    (sm120 FP8 / NVFP4 pages), all sound walks. So on an mma.sync page
+    (``mma_sync``) the floor is that accumulator registers are in the peak set at
+    all, read off the same provenance table the report prints."""
     out("\n=== liveness over doubled body ===")
     prof, peak_i, peak_set, guessed = liveness(body)
     out(f"[live] peak={max(prof)} regs at body instr {peak_i} "
@@ -950,8 +963,11 @@ def _liveness_report(body, owner, out) -> bool:
         out(f"[live] instrs {s:4d}-{min(s + q, len(prof)) - 1:4d}: "
             f"peak {max(seg):3d}  mean {sum(seg) // len(seg):3d}")
     frac = guessed / max(1, len(body))
-    ok_b = 96 <= max(prof) <= 256 and frac < 0.25
-    out(f"LIVE-{'OK' if ok_b else 'FAIL'} peak={max(prof)} guessed_frac={frac:.2f}")
+    acc = sum(v for k, v in cls.items() if k.startswith("acc:"))
+    floor_ok = acc >= MMA_SYNC_ACC_FLOOR if mma_sync else 96 <= max(prof)
+    ok_b = floor_ok and max(prof) <= 256 and frac < 0.25
+    out(f"LIVE-{'OK' if ok_b else 'FAIL'} peak={max(prof)} guessed_frac={frac:.2f}"
+        + (f" acc_regs={acc} floor=mma_sync" if mma_sync else ""))
     if not ok_b:
         out("[live] unknown-role samples:")
         shown = 0

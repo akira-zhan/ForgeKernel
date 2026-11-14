@@ -230,11 +230,20 @@ def node_dirty():
     return _node_dirty[-1] if _node_dirty else None
 
 
+def _smi(*args) -> list:
+    """nvidia-smi scoped to this job's GPU. It does not read CUDA_VISIBLE_DEVICES: on a
+    multi-GPU machine an unscoped query answers for every GPU, so the orphan sweep would
+    SIGKILL another run's python / ncu on the next GPU and a clock read would be GPU 0's
+    (gpu_entry.sh's lb_smi spells the same rule)."""
+    vis = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    return ["nvidia-smi"] + (["-i", vis] if vis else []) + list(args)
+
+
 def gpu_compute_pids():
     """PIDs holding a CUDA context on this GPU per nvidia-smi; None = unknown."""
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+            _smi("--query-compute-apps=pid", "--format=csv,noheader"),
             capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None

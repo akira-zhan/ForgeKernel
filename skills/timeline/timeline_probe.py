@@ -1034,10 +1034,19 @@ def _kill_group(p, grace_s: float = 5.0) -> None:
         pass
 
 
+def _smi(*args) -> list:
+    """nvidia-smi scoped to this job's GPU. It does not read CUDA_VISIBLE_DEVICES: on a
+    multi-GPU machine an unscoped query answers for every GPU, so the orphan sweep would
+    SIGKILL another run's python / ncu on the next GPU and a clock read would be GPU 0's
+    (gpu_entry.sh's lb_smi spells the same rule)."""
+    vis = (os.environ.get("CUDA_VISIBLE_DEVICES") or "").strip()
+    return ["nvidia-smi"] + (["-i", vis] if vis else []) + list(args)
+
+
 def _gpu_held_pids():
     try:
         out = subprocess.run(
-            ["nvidia-smi", "--query-compute-apps=pid", "--format=csv,noheader"],
+            _smi("--query-compute-apps=pid", "--format=csv,noheader"),
             capture_output=True, text=True, timeout=20).stdout
     except (OSError, subprocess.TimeoutExpired):
         return None
@@ -1140,7 +1149,7 @@ def run_bench(label: str, env=None):
 
 def _read_sm_clock():
     try:
-        out = subprocess.run(["nvidia-smi", "--query-gpu=clocks.sm", "--format=csv,noheader,nounits"],
+        out = subprocess.run(_smi("--query-gpu=clocks.sm", "--format=csv,noheader,nounits"),
                              capture_output=True, text=True, timeout=10).stdout.strip().splitlines()
         return float(out[0]) if out and out[0].strip() else None
     except Exception:  # noqa: BLE001 — a missing tool is not a failed probe

@@ -54,3 +54,25 @@ def test_timeline_sweep_treats_an_unavailable_nvidia_smi_as_node_dirty(monkeypat
     assert tp._sweep_gpu("after the stamped bench timed out", wait_s=0.0, sleep=lambda s: None) == []
     out = capsys.readouterr().out
     assert "NODE-DIRTY after the stamped bench timed out: nvidia-smi unavailable" in out
+
+
+def test_nvidia_smi_queries_are_scoped_to_the_jobs_gpu(monkeypatch):
+    """nvidia-smi does not read CUDA_VISIBLE_DEVICES. Unscoped on a multi-GPU machine, the
+    orphan sweep would SIGKILL another run's python / ncu on the next GPU and the clock read
+    would be GPU 0's; the job's GPU is passed with ``-i`` (as gpu_entry.sh's lb_smi does)."""
+    from forgekernel.skills import lever_pricing_run as lp
+    seen = []
+
+    class _Done:
+        stdout = "2600\n"
+
+    for mod in (tp, lp):
+        monkeypatch.setattr(mod.subprocess, "run", lambda cmd, **kw: seen.append(cmd) or _Done())
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "3")
+    assert tp._smi("-q") == lp._smi("-q") == ["nvidia-smi", "-i", "3", "-q"]
+    tp._gpu_held_pids(), lp.gpu_compute_pids()
+    assert tp._read_sm_clock() == 2600.0
+    assert len(seen) == 3 and all(cmd[:3] == ["nvidia-smi", "-i", "3"] for cmd in seen)
+    # a job that was not pinned keeps the machine-wide query
+    monkeypatch.delenv("CUDA_VISIBLE_DEVICES")
+    assert tp._smi("-q") == ["nvidia-smi", "-q"]

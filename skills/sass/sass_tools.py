@@ -75,6 +75,14 @@ _NCU_ADDR = re.compile(r"^\s*(0x[0-9a-fA-F]+)\s+(\S.*)$")
 _BODY = re.compile(r"^(@!?U?P(?:T|\d+)\s+)?([A-Z][A-Za-z0-9_.]{2,})\b\s*(.*)$")
 
 
+# A constant-false guard: PT / UPT are the always-true predicates, so ``@!PT`` never
+# executes. ptxas pads with such lines -- on sm_120a three ``@!PT LDS RZ, [RZ]`` ahead of
+# every LDGSTS run and after a scalar LDS -- and a reader that counts the mnemonic
+# reports scalar shared-memory loads the kernel does not have (one real LDS read as
+# ``LDS x4``). They are read as the NOP they are.
+_NEVER_PREDICATES = ("@!PT", "@!UPT")
+
+
 class Instr(NamedTuple):
     addr: Optional[str]
     opcode: str          # full dotted mnemonic, never truncated
@@ -115,6 +123,11 @@ def parse_sass(text: str) -> ParseResult:
         bm = _BODY.match(body)
         if not bm:
             unparsed += 1
+            continue
+        if (bm.group(1) or "").strip() in _NEVER_PREDICATES:
+            # Keeps its address and its place in the stream (a loop head or a
+            # sampled PC may be this line); only what it is counted as changes.
+            instructions.append(Instr(addr, "NOP", ""))
             continue
         instructions.append(Instr(addr, bm.group(2), bm.group(3).strip()))
     return ParseResult(instructions, errors, unparsed)
@@ -187,9 +200,13 @@ def self_check(profiled_kernel: str,
         problems.append(
             "parsed 0 instructions — the parser, not the kernel, is the story")
     elif below_floor(parsed.instructions, min_instructions):
+        # quote the floor that applied: an mma.sync page is held to the lower one
+        mma_sync = bool(family_counts(parsed.instructions, SM120_MMA_SYNC_FAMILIES))
+        floor = min(min_instructions, MIN_MMA_SYNC_INSTRUCTIONS) if mma_sync else min_instructions
         problems.append(
-            f"only {len(parsed.instructions)} instructions (< {min_instructions}) — "
-            f"a real tensor kernel is thousands; this smells like a helper kernel")
+            f"only {len(parsed.instructions)} instructions (< {floor}) — "
+            + ("too short even for a compact mma.sync mainloop" if mma_sync else
+               "a real tensor kernel is thousands") + "; this smells like a helper kernel")
     if parsed.instructions and families and not family_counts(parsed.instructions,
                                                               families):
         problems.append(

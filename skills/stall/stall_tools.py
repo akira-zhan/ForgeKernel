@@ -550,6 +550,51 @@ def _sched_modules():
             return None, None
 
 
+def _orch_tools():
+    """orch_tools (the page's launch splitter) — package import or vendored-flat; None if
+    neither is there (the ledger then reads the page whole, as it always did)."""
+    try:
+        from forgekernel.skills import orch_tools
+        return orch_tools
+    except ImportError:
+        try:
+            import orch_tools          # noqa: F401  (vendored next to this file)
+            return orch_tools
+        except ImportError:
+            return None
+
+
+_PAGE_ADDR = re.compile(r"^\s*(?:/\*([0-9a-fA-F]+)\*/|(0x[0-9a-fA-F]+)\s)")
+
+
+def launch_of_samples(sass_text: str, per_pc: dict) -> "tuple[str, int, int]":
+    """(the page's launch that holds the sampled PCs, launches on the page, index used).
+
+    The source page prints every captured launch back to back, and a card that serves
+    several workload shapes captures a different kernel instance per shape. Read whole,
+    the page is one instruction stream: the loop finder takes the largest loop anywhere
+    on it -- another instance's -- and every sample of the dominant launch lands
+    "outside the body" (JOIN-FAIL no-samples-in-body on two-workload sm120 decode
+    pages). The launch to read is the one the samples are in, by address."""
+    orch = _orch_tools()
+    if orch is None:
+        return sass_text, 1, 0
+    chunks = orch.split_launches(sass_text)
+    if len(chunks) <= 1:
+        return sass_text, len(chunks), 0
+
+    def mass(chunk: str) -> int:
+        addrs = set()
+        for line in chunk.splitlines():
+            m = _PAGE_ADDR.match(line)
+            if m:
+                addrs.add(int(m.group(1) or m.group(2), 16))
+        return sum(sum(v.values()) for pc, v in per_pc.items() if pc in addrs)
+
+    used = max(range(len(chunks)), key=lambda i: mass(chunks[i]))
+    return chunks[used], len(chunks), used
+
+
 def render_sass_text(report_path):
     """The report's SASS page as text (not CSV) — what parse_sass consumes."""
     import shutil
@@ -688,6 +733,10 @@ def _segment_ledger_body(report_path, kernel_substr, out, sass_text=None) -> boo
         if err:
             out(f"JOIN-FAIL reason=no-sass ({err})")
             return False
+    sass_text, n_launches, used = launch_of_samples(sass_text, per_pc)
+    if n_launches > 1:
+        out(f"[join] page carried {n_launches} launches; reading launch {used} "
+            f"(the one the samples are in)")
     parsed = sass_tools.parse_sass(sass_text)
     instrs = parsed.instructions
     if not instrs:

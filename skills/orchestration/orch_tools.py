@@ -898,6 +898,18 @@ _LAUNCH_HEADER = re.compile(
     r",\s*(?:[^,]*,\s*)?Context \d+, Stream \d+")
 
 
+# The same boundary as ncu 2025.x prints it: the page is one table per launch, opened by a
+#   Kernel Name        <name>
+#                      <the name's continuation rows, one token each>
+# row between two rule lines, above the ``Address  Source ...`` column header. On such a
+# page the one-line header above never matches, and two instances of one kernel (a JIT
+# specialization per workload shape) sit at increasing addresses, so the address rule
+# reads "instance A, then instance B" as a single kernel: a two-workload sm120 decode
+# page (536 + 704 instructions) came back as one 1240-instruction dossier.
+_LAUNCH_TABLE_NAME = re.compile(r"^\s*Kernel Name\s+(?P<name>\S+)\s*$")
+_LAUNCH_TABLE_CONT = re.compile(r"^\s+(?P<part>\S+)\s*$")
+
+
 def split_launches_named(sass_text: str) -> List[Tuple[Optional[str], str]]:
     """The page's launches as (kernel name or None, text chunk).
 
@@ -910,28 +922,52 @@ def split_launches_named(sass_text: str) -> List[Tuple[Optional[str], str]]:
     window is on it too) or, on a page without headers, where the instruction
     address stops increasing (each kernel's code starts over at its base; a
     bystander sitting BELOW the kernel would fuse with the kernel's first
-    launch on that reading alone, which is why the header wins). A single-
+    launch on that reading alone, which is why the header wins). The header
+    has two spellings: the one-line result header, and ncu 2025.x's per-launch
+    table (``Kernel Name`` row, name wrapped over continuation rows). A single-
     launch page comes back as one chunk."""
     chunks: List[List[str]] = [[]]
     names: List[Optional[str]] = [None]
     prev = None
+    has_instr = False    # the open chunk holds an instruction line (table headers only)
+    name_open = False    # inside a table header's wrapped kernel name
     for line in sass_text.splitlines():
+        is_instr = _LINE_CUOBJDUMP.match(line) or _LINE_NCU.match(line)
+        t = None if is_instr else _LAUNCH_TABLE_NAME.match(line)
+        if t is not None:
+            # The rule line above the name row is already in the open chunk: a chunk
+            # with no instruction yet is this launch's own preamble, not a launch.
+            if has_instr:
+                chunks.append([])
+                names.append(None)
+            names[-1] = t.group("name")
+            prev, has_instr, name_open = None, False, True
+            chunks[-1].append(line)
+            continue
+        if name_open:
+            c = None if is_instr else _LAUNCH_TABLE_CONT.match(line)
+            if c is not None:
+                names[-1] += c.group("part")
+                chunks[-1].append(line)
+                continue
+            name_open = False
         h = _LAUNCH_HEADER.match(line)
-        if h is not None and not (_LINE_CUOBJDUMP.match(line) or _LINE_NCU.match(line)):
+        if h is not None and not is_instr:
             if chunks[-1]:
                 chunks.append([])
                 names.append(None)
             names[-1] = h.group("name").strip()
-            prev = None
+            prev, has_instr = None, False
             chunks[-1].append(line)
             continue
-        m = _LINE_CUOBJDUMP.match(line) or _LINE_NCU.match(line)
+        m = is_instr
         if m:
             addr = int(m.group(1), 16)
             if prev is not None and addr <= prev and chunks[-1]:
                 chunks.append([])
                 names.append(None)
             prev = addr
+            has_instr = True
         chunks[-1].append(line)
     return [(n, "\n".join(c)) for n, c in zip(names, chunks) if c]
 

@@ -162,7 +162,8 @@ def test_struct_reads_a_named_barrier_qmma_construction():
     text = "\n".join(lines)
     assert "BAR.SYNC 0x1,0x80 -> 4 warps" in text
     assert "QMMA.16832.F32.E4M3.E4M3 x1@4w" in text and "STS x1@4w" in text
-    assert "LDS x4@4w" in text
+    # one scalar LDS per phase: the three ``@!PT LDS RZ, [RZ]`` behind it never execute
+    assert "LDS x1@4w" in text and "LDS x4@4w" not in text
     assert any(line.startswith("STRUCT-OK") for line in lines)
 
 
@@ -253,3 +254,90 @@ def test_report_lists_the_nomination(capsys):
     out = capsys.readouterr().out
     sec = out.split("cross-proxy WAR; nominations) ===")[1].split("===")[0]
     assert "SYNCS.ARRIVE.TRANS64.A1T0" in sec and ": bare -- LDSM.16.M88.4" in sec
+
+
+# --- constant-false padding, the liveness floor, multi-instance pages ----------------------------
+
+def test_never_executing_padding_is_not_counted_as_shared_loads():
+    """ptxas pads an sm_120a cp.async fill with ``@!PT LDS RZ, [RZ]`` (constant-false guard).
+    Counted by mnemonic they read as scalar shared-memory loads; the compact cp.async
+    mainloops have none."""
+    raw = _page(PIPE2)
+    assert raw.count("@!PT") == 6 and "LDS RZ, [RZ]" in raw
+    instrs = _instrs(PIPE2)
+    hist = sass_tools.opcode_histogram(instrs)
+    assert "LDS" not in hist and hist["NOP"] >= 6
+    # the padded lines keep their address and position: nothing downstream re-indexes
+    n_lines = sum(1 for line in raw.splitlines() if line.lstrip().startswith("/*"))
+    assert len(instrs) == n_lines
+    # a guard that can be true is still an instruction
+    kept = parse_sass("/*0010*/  @!P0 LDS R4, [R2] ;\n/*0020*/  @P1 LDS R5, [R2] ;\n"
+                      "/*0030*/  @!PT LDS RZ, [RZ] ;\n/*0040*/  @!UPT ULDC UR4, c[0x0][0x0] ;\n")
+    assert [i.opcode for i in kept.instructions] == ["LDS", "LDS", "NOP", "NOP"]
+
+
+@pytest.mark.parametrize("name,peak", [("omma_nvf4_blockscaled_loop", 27),
+                                       ("qmma_mxf8_blockscaled_loop", 27),
+                                       ("qmma_f16acc_loop", 23)])
+def test_liveness_floor_on_mma_sync_is_the_accumulator_not_96(name, peak):
+    """An mma.sync warp holds 2-4 accumulator registers per issue, so a one-tile loop peaks
+    in the twenties and a small-M decode mainloop at 33-66. The 96-register floor is the
+    wgmma reading (a warpgroup's whole accumulator); on an mma.sync page the walk is sound
+    when the accumulator registers are in the peak set."""
+    lines = []
+    _, live_ok = SL.report(_page(name), out=lines.append)
+    live = next(line for line in lines if line.startswith("LIVE-"))
+    assert live_ok and live.startswith(f"LIVE-OK peak={peak} guessed_frac=")
+    assert live.endswith("floor=mma_sync") and "acc_regs=" in live
+
+
+def test_liveness_floor_still_fails_a_walk_that_saw_no_accumulator():
+    lines = []
+    body = list(parse_sass("\n".join(f"/*{0x10 * k:04x}*/  IADD3 R{k % 8}, R{k % 8}, 0x1, RZ ;"
+                                      for k in range(40))).instructions)
+    assert SL._liveness_report(body, {}, lines.append, mma_sync=True) is False
+    assert any(line.startswith("LIVE-FAIL peak=") and "acc_regs=0" in line for line in lines)
+
+
+TWO_INSTANCES = FIX / "ncu_source_two_instances.txt"
+
+
+def test_ncu_table_headers_split_two_instances_of_one_kernel():
+    """``ncu --import --page source`` of ncu 2025.3 prints one table per launch, opened by a
+    ``Kernel Name`` row (the name wrapped over continuation rows). The fixture is such a
+    page of a two-workload sm120 FP8 decode card, trimmed to Address / Source: the N=4096
+    instance, then the N=14336 one at higher addresses. With no header the address rule
+    fuses them into one 1352-instruction kernel."""
+    page = TWO_INSTANCES.read_text()
+    named = OT.split_launches_named(page)
+    assert [OT._instr_lines(t) for _, t in named] == [680, 672]
+    names = [n for n, _ in named]
+    assert names[0].startswith("kernel_cutlass_kernel_student_kernelFp8DecodeGemm_object_at__CopyAtom")
+    assert "tensor00o40961110" in names[0] and "tensor00o143361110" in names[1]
+    assert " " not in names[0] and names[0].endswith("1163840_0")
+    # the caller's pick is one instance, by index or by name
+    chunk, n, used = OT.select_launch(page, launch=1)
+    assert (n, used) == (2, 1) and OT._instr_lines(chunk) == 672
+    chunk, n, used = OT.select_launch(page, kernel="tensor00o40961110")
+    assert (n, used) == (2, 0) and OT._instr_lines(chunk) == 680
+    # and the dossier is built off that one instance
+    lines = []
+    assert OT.report(page, out=lines.append, launch=1)
+    text = "\n".join(lines)
+    assert "page carried 2 launches; using launch 1" in text
+
+
+def test_segment_ledger_reads_the_launch_its_samples_are_in():
+    """The stall samples belong to one launch; the page carries every instance. Read whole,
+    the loop finder took the other instance's loop and the ledger printed
+    ``JOIN-FAIL reason=no-samples-in-body``."""
+    page = TWO_INSTANCES.read_text()
+    chunks = OT.split_launches(page)
+    addrs = [[int(line.split()[0], 16) for line in c.splitlines() if line.startswith("0x")]
+             for c in chunks]
+    for want in (0, 1):
+        per_pc = {a: {"sleeping": 5} for a in addrs[want][100:140]}
+        chunk, n, used = stall_tools.launch_of_samples(page, per_pc)
+        assert (n, used) == (2, want) and chunk == chunks[want]
+    # a single-launch page is handed back untouched
+    assert stall_tools.launch_of_samples(chunks[0], {addrs[0][5]: {"wait": 1}}) == (chunks[0], 1, 0)
