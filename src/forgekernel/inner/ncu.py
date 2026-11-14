@@ -101,6 +101,13 @@ ARCH_EXTRA_METRICS: dict[str, dict[str, str]] = {
     "sm_120": {
         "sm__sass_l1tex_data_pipe_lsu_wavefronts_mem_shared_op_ldgsts.sum": "smem_wavefronts_ldgsts",
         "sm__sass_inst_executed_op_ldgsts.sum": "ldgsts_inst",
+        # Where an mbarrier / TMA wait is counted on GB202: 97-100 % of the
+        # mbarrier.trywait (SYNCS.PHASECHK) samples of the sm120 decode GEMMs read
+        # ``sleeping``, and a TMA-fed decode mainloop reads 20 here against 3.5
+        # long-scoreboard and 1.9 barrier. Without it the dominant wait of a
+        # TMA + mbarrier kernel is in no column at all. Not a SASS-patched counter
+        # (no extra pass); arch-gated because the reading was only taken here.
+        "smsp__average_warps_issue_stalled_sleeping_per_issue_active.ratio": "stall_sleeping",
     },
 }
 
@@ -125,7 +132,7 @@ _TRACE_COLUMNS = [
     "smem_wavefronts_st", "smem_wavefronts_ld", "smem_wavefronts_ldgsts", "ldgsts_inst",
     "spill_ld_sectors", "spill_st_sectors", "tensor_pct", "warp_active_pct",
     "wgmma_serial_ratio",
-    "stall_long_sb", "stall_barrier", "stall_mio", "dram_pct",
+    "stall_long_sb", "stall_barrier", "stall_mio", "stall_sleeping", "dram_pct",
     "dram_bytes_read", "dram_bytes_write",
     "block_size", "block_size_dims", "grid_size", "grid_size_dims",
     "smem_static", "smem_dynamic",
@@ -500,6 +507,8 @@ def render_ncu_trace(records) -> str:
 
 # Thresholds for flagging a metric as a pathology (SM90 heuristics; tunable).
 # Each: (key, kind, severe, elevated) — kind "hi" = high-is-bad, "lo" = low-is-bad.
+# A key only an architecture's extra metrics produce (ARCH_EXTRA_METRICS: stall_sleeping,
+# ldgsts_fill_wavefronts) is absent everywhere else, so its row never fires there.
 _THRESHOLDS = [
     ("bankconf_st", "hi", 10_000_000, 1_000_000),
     ("bankconf_ld", "hi", 10_000_000, 1_000_000),
@@ -509,6 +518,12 @@ _THRESHOLDS = [
     ("stall_long_sb", "hi", 20, 5),
     ("stall_barrier", "hi", 20, 5),
     ("stall_mio", "hi", 20, 5),
+    # Same unit as the three stall rows above (warps per issue-active cycle).
+    ("stall_sleeping", "hi", 20, 5),
+    # Wavefronts per executed LDGSTS (derived in summarize_metrics): 4 is a
+    # conflict-free 16 B-per-lane fill and 32 the lanes-256-B-apart worst case
+    # (hw_kb/*/sm120/smem_traffic_triage.md), so over 4 is a fill conflict.
+    ("ldgsts_fill_wavefronts", "hi", 8, 4.5),
     ("tensor_pct", "lo", 15, 30),      # <15 severe, <30 elevated
     ("warp_active_pct", "lo", 10, 20),
     # wgmma waits per wgmma (sass_census.wgmma_serialization_from_text, rides the
@@ -554,6 +569,15 @@ _NOTES = {
         "ldgsts_inst -- 4 per LDGSTS at 16 B per lane is conflict-free, more is a fill "
         "conflict that no bank-conflict counter reports"),
     "ldgsts_inst": "executed LDGSTS (cp.async) instructions, sm_120 only",
+    "ldgsts_fill_wavefronts": (
+        "SMEM wavefronts per executed LDGSTS (cp.async fill), sm_120 only: 4 is conflict-free "
+        "at 16 B per lane, more is a fill conflict (the thread -> smem address map of the "
+        "fill; no bank-conflict counter reports it)"),
+    "stall_sleeping": (
+        "sleeping stall, sm_120 only — where mbarrier / TMA waits are counted on this "
+        "architecture (measured 97-100 % of mbarrier.trywait samples): consumers waiting "
+        "for supply, read it against dram_pct (DRAM at its peak = bandwidth bound; DRAM "
+        "with headroom = the supply path is late)"),
     "smem_wavefronts_vs_ref": (
         "total SMEM wavefronts vs arch ref — a scalar/per-element access path "
         "(the copy atom, NOT the swizzle: switch to STSM/LDSM, vectorized, or "
@@ -581,7 +605,44 @@ _NOTES = {
 }
 
 
-def summarize_metrics(m: dict, baseline: dict | None = None) -> dict:
+# Notes that name wgmma (the sm90 trunk) reworded for an mma.sync architecture, where
+# there is no warpgroup MMA, no wait_group and no MMA smem descriptor. Keyed like
+# ARCH_EXTRA_METRICS (CUTE_DSL_ARCH prefix).
+_ARCH_NOTES: dict[str, dict[str, str]] = {
+    "sm_120": {
+        "smem_wavefronts_vs_ref": (
+            "total SMEM wavefronts vs arch ref — a scalar/per-element access path "
+            "(the copy atom, NOT the swizzle: switch to LDSM / STSM or vectorized "
+            "accesses; swizzle tuning cannot reduce volume)"),
+        "stall_long_sb": (
+            "long-scoreboard stall — waits on a memory result (LDG / LDS / LDSM); on this "
+            "architecture mbarrier / TMA waits are NOT here, they read as stall_sleeping"),
+        "stall_barrier": (
+            "barrier stall — named barriers (bar.sync) between the CTA's warps; there is "
+            "no wgmma wait_group on this architecture"),
+        "tensor_pct": (
+            "tensor-pipe active (low = the mma.sync warps are waiting, not issuing: see "
+            "which stall row and dram_pct carry the wait)"),
+    },
+}
+
+
+def arch_key(arch: str | None) -> str | None:
+    """``sm120`` / ``sm_120a`` -> ``sm_120``, the key ARCH_EXTRA_METRICS and _ARCH_NOTES use."""
+    m = re.fullmatch(r"sm_?(\d+)a?", arch or "")
+    return f"sm_{m[1]}" if m else None
+
+
+def _arch_of(m: dict, arch: str | None) -> str | None:
+    """The architecture a metrics dict is read as: ``arch`` when the caller names it, else
+    the one whose extra metrics the dict carries (they are requested on that arch only)."""
+    if (key := arch_key(arch)):
+        return key
+    return next((a for a, extra in ARCH_EXTRA_METRICS.items()
+                 if any(short in m for short in extra.values())), None)
+
+
+def summarize_metrics(m: dict, baseline: dict | None = None, arch: str | None = None) -> dict:
     """Digest a kernel's key metrics into flagged pathologies + a one-line verdict.
 
     Returns {"flags": [{key, value, severity, note}], "verdict": <str>}. This is
@@ -591,7 +652,15 @@ def summarize_metrics(m: dict, baseline: dict | None = None) -> dict:
     ``baseline`` is the arch ref's NCU signature (``RefBaseline.ncu``). It powers
     the ratio-based wavefront-volume flag — a volume tax has no absolute "too
     high", only "N x what the reference pays for the same data".
+
+    ``arch`` (``sm120`` / ``sm_120a``; inferred from the metrics when omitted) picks the
+    wording of the notes and enables the reads only that architecture's extra metrics
+    support (cp.async fill conflicts, the mbarrier wait as a sleeping stall).
     """
+    arch = _arch_of(m, arch)
+    notes = {**_NOTES, **_ARCH_NOTES.get(arch or "", {})}
+    if m.get("ldgsts_inst") and m.get("smem_wavefronts_ldgsts") is not None:
+        m = {**m, "ldgsts_fill_wavefronts": round(m["smem_wavefronts_ldgsts"] / m["ldgsts_inst"], 2)}
     flags = []
     for key, kind, severe, elevated in _THRESHOLDS:
         if key not in m or m[key] is None:
@@ -603,13 +672,13 @@ def summarize_metrics(m: dict, baseline: dict | None = None) -> dict:
         else:  # lo
             sev = "severe" if val <= severe else ("elevated" if val <= elevated else None)
         if sev:
-            flags.append({"key": key, "value": val, "severity": sev, "note": _NOTES.get(key, "")})
+            flags.append({"key": key, "value": val, "severity": sev, "note": notes.get(key, "")})
 
     ratio = _wavefront_ratio(m, baseline)
     if ratio is not None and ratio >= _WAVEFRONT_RATIO_ELEVATED:
         sev = "severe" if ratio >= _WAVEFRONT_RATIO_SEVERE else "elevated"
         flags.append({"key": "smem_wavefronts_vs_ref", "value": round(ratio, 2),
-                      "severity": sev, "note": _NOTES["smem_wavefronts_vs_ref"]})
+                      "severity": sev, "note": notes["smem_wavefronts_vs_ref"]})
 
     def sv(key):  # severity of a flagged key, else None
         return next((f["severity"] for f in flags if f["key"] == key), None)
@@ -629,14 +698,29 @@ def summarize_metrics(m: dict, baseline: dict | None = None) -> dict:
                    "volume vs ref; swizzle tuning cannot fix this)")
     elif sv("bankconf_st") == "severe" or sv("bankconf_ld") == "severe":
         verdict = "SMEM bank-conflict bound (degenerate/conflicting smem layout)"
+    elif sv("ldgsts_fill_wavefronts") == "severe":
+        verdict = ("cp.async fill-conflict bound (wavefronts per LDGSTS vs 4 conflict-free "
+                   "— the fill's thread -> smem address map)")
     elif sv("dram_pct") in ("severe", "elevated"):
         verdict = "memory-bandwidth bound"
     elif (sv("spill_st_sectors") or sv("spill_ld_sectors")) and sv("warp_active_pct"):
         verdict = "register-spill / latency bound"
+    elif sv("stall_sleeping") and sv("tensor_pct"):
+        # The tensor pipe idles because its warps sleep on mbarrier / TMA waits: the
+        # supply is late, and DRAM (not flagged above) still has headroom. Without
+        # the sleeping stall a DRAM-streaming decode GEMM fell through to "latency
+        # bound (tensor core starved)" below, which names the MMA issue rate when
+        # the wait is on the supply path.
+        dram = m.get("dram_pct")
+        verdict = ("supply-wait bound (warps asleep on mbarrier / TMA waits while the "
+                   "tensor pipe idles" + (f"; DRAM at {dram:g} % of peak, not yet the bound)"
+                                          if dram is not None else ")"))
     elif sv("tensor_pct") and sv("warp_active_pct"):
         verdict = "latency bound (tensor core starved)"
     elif sv("smem_wavefronts_vs_ref"):
         verdict = "elevated SMEM wavefront volume vs ref (check the copy atoms)"
+    elif sv("ldgsts_fill_wavefronts"):
+        verdict = "elevated cp.async fill wavefronts per LDGSTS (check the fill's address map)"
     elif sv("bankconf_st") or sv("bankconf_ld"):
         verdict = "elevated SMEM bank conflicts"
     elif not m:
@@ -646,17 +730,18 @@ def summarize_metrics(m: dict, baseline: dict | None = None) -> dict:
     return {"flags": flags, "verdict": verdict}
 
 
-def render_ncu_report(records, baseline: dict | None = None) -> str:
+def render_ncu_report(records, baseline: dict | None = None, arch: str | None = None) -> str:
     """Per-iteration NCU SUMMARY — verdict + flagged key metrics (not the raw dump).
 
     ``baseline`` (the arch ref's NCU signature) enables the ratio-based
-    wavefront-volume flag; without it only the absolute thresholds fire."""
+    wavefront-volume flag; without it only the absolute thresholds fire. ``arch`` is
+    the run's architecture (``summarize_metrics``)."""
     lines = []
     for r in records:
         prof = getattr(r, "profiler", None) or {}
         if not prof:
             continue
-        s = summarize_metrics(prof, baseline=baseline)
+        s = summarize_metrics(prof, baseline=baseline, arch=arch)
         head = f"iter {r.iter} [{r.verdict}] {r.decision_id}"
         if getattr(r, "bwd_median_ms", None) is not None:
             mfu = getattr(r, "mfu", None)
