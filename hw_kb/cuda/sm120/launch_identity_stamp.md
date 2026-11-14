@@ -68,11 +68,12 @@ must be judged a mismatch — that proves the table itself discriminates.
    `%cluster_nctaid` = (2,1,1), `%nclusterid` = (30,1,1) (readings of the sm100 tree). On sm120: grid (1,96,1), cluster (1,8,1)
    -> (1,8,1) / (1,12,1), `%cluster_nctarank` = 8; grid (8,4,1), cluster (4,1,1) -> (4,1,1) / (2,4,1). The two names differ by one
    word; swapping them reads "8" as "12".
-   `%cluster_ctarank` numbers CTAs in linear order within the cluster (in the two examples above it equals `blockIdx.y % 8` and `blockIdx.x % 2` respectively).
+   `%cluster_ctarank` numbers CTAs in linear order within the cluster (in the two sm100 examples it equals `blockIdx.y % 8` and
+   `blockIdx.x % 2`; a reading of the sm100 tree -- the sm120 probe checks only that every rank is inside the cluster).
 2. **Stamp compile-time constants, not runtime arguments.** A `stages` argument passed into the kernel only reports the host's intention; template parameters / `constexpr`
    are the values actually compiled into this executable.
-3. **`%dynamic_smem_size` equals the launch's `dynamicSmemBytes` exactly.** Measured 65536, 40960, and even an unaligned 1000 B reads back 1000
-   (identical across all CTAs of a launch). Beyond 48 KiB you must first call `cudaFuncSetAttribute(..., cudaFuncAttributeMaxDynamicSharedMemorySize, n)`,
+3. **`%dynamic_smem_size` equals the launch's `dynamicSmemBytes` exactly.** Readings of the sm100 tree: 65536, 40960, and even an
+   unaligned 1000 B reads back 1000 (identical across all CTAs of a launch). Beyond 48 KiB you must first call `cudaFuncSetAttribute(..., cudaFuncAttributeMaxDynamicSharedMemorySize, n)`,
    otherwise the launch fails. On sm120 the attribute accepts at most **101376 B (99 KiB)**: `cudaFuncSetAttribute(..., 101376)`
    succeeds, `101376 + 1024` returns `invalid argument` -- check that return value; a kernel carried over from sm100 (227 KiB)
    with an overshooting stage count fails here, not at compile time. Measured on sm120: 65536 and 98304 B read back exactly.

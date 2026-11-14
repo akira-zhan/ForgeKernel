@@ -23,7 +23,10 @@ Contracts:
 - ``orch-<shape>``     : the dossier resolves 2 x S mbarrier objects, all CONST (full + empty per stage); for ``ws`` its
   edges carry both directions copy-producer -> mma-consumer and mma-consumer -> copy-producer;
 - ``N-occupancy``      : (ncu) ``inline`` (64 B rows, 3 stages) runs 2 CTA / SM, ``ws`` 1 CTA / SM, and ``inline`` keeps
-  the tensor pipe busier.
+  the tensor pipe busier;
+- ``N-smem-not-the-limit``: (ncu) both shapes launch with the same dynamic shared memory, and ``inline`` fits two of
+  them per SM; the ``ws`` launch reads a shared-memory limit of 1 only because its smem configuration is the smaller
+  carve-out sized for the one CTA its registers allow.
 Facts: TFLOPS per configuration (median of 20, clocks unlocked), NCU readings.
 """
 import glob
@@ -303,6 +306,11 @@ def stage_target():
 
 def ncu_occupancy():
     mets = ["launch__occupancy_limit_registers", "launch__occupancy_limit_shared_mem", "launch__registers_per_thread",
+            "launch__shared_mem_per_block_dynamic", "launch__shared_mem_per_block_driver",
+            "launch__shared_mem_config_size",
+            "smsp__average_warps_issue_stalled_sleeping_per_issue_active.ratio",
+            "smsp__average_warps_issue_stalled_long_scoreboard_per_issue_active.ratio",
+            "smsp__average_warps_issue_stalled_barrier_per_issue_active.ratio",
             "sm__warps_active.avg.per_cycle_active", "sm__pipe_tensor_cycles_active.avg.pct_of_peak_sustained_elapsed",
             "smsp__inst_executed.sum"]
     got = {}
@@ -327,7 +335,19 @@ def ncu_occupancy():
         md = f"inline {lim(i):.0f} CTA/SM tensor {i[t]:.1f} %, ws {lim(w):.0f} CTA/SM tensor {w[t]:.1f} %"
     except KeyError as e:
         ok, md = False, f"missing {e}"
-    return [("N-occupancy", ok, md)]
+    out = [("N-occupancy", ok, md)]
+    try:
+        dyn, drv, cfg = ("launch__shared_mem_per_block_dynamic", "launch__shared_mem_per_block_driver",
+                         "launch__shared_mem_config_size")
+        per_cta = i[dyn] + i[drv]
+        ok2 = (i[dyn] == w[dyn] and i["launch__occupancy_limit_shared_mem"] == 2 and 2 * per_cta <= i[cfg]
+               and w["launch__occupancy_limit_registers"] == 1 and w[cfg] < i[cfg] and per_cta <= w[cfg] < 2 * per_cta)
+        md2 = (f"smem / CTA {i[dyn]:.0f} + {i[drv]:.0f} B in both; inline config {i[cfg]:.0f} B -> 2 CTA / SM, "
+               f"ws config {w[cfg]:.0f} B -> 1 (register limit {w['launch__occupancy_limit_registers']:.0f})")
+    except (KeyError, NameError) as e:
+        ok2, md2 = False, f"missing {e}"
+    out.append(("N-smem-not-the-limit", ok2, md2))
+    return out
 
 
 STAGES = {"numerics": stage_numerics, "stress": stage_stress, "sass": stage_sass, "target": stage_target}

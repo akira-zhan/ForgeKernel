@@ -26,6 +26,39 @@ For human review only; not in any agent read set.
 
 ## What was not established
 
-- Why `.inc` above 168 hangs when the pool arithmetic fits (the recipe's lone-producer-warp hypothesis is untested).
+- (Established on 2026-11-14, see below.) Why `.inc` above 168 hangs when the pool arithmetic fits.
 - Which role's code spilled under the 24 / 168 split.
 - Whether ptxas drops `setmaxnreg` on sm_120a without `min_blocks_per_mp` (every rung had the attribute).
+
+## 2026-11-14: the quota rule, re-certified with a repository probe
+
+The two probes above lived in the run's `notes/` and are gone. `probes/sm120/mechanisms/setmaxnreg_split_check.py`
+re-earns the hang and separates its cause on a minimal TMA-fed `mma.sync` GEMM (RTX PRO 5000, GPU 3, CuTe DSL 4.8.0,
+`min_blocks_per_mp=1`), one subprocess per rung, 90 s without a return = hang:
+
+| CTA (consumer + producer-role warps) | compiled registers / thread | producer `.dec` / consumer `.inc` | outcome |
+|---|---|---|---|
+| 4 + 4 (256 threads) | 178 | none / 232 | done, exact |
+| 4 + 4 | 178 | 40 / 232 | done, exact |
+| 4 + 1 (160 threads) | 178 | 24 / 208 | done, exact |
+| 8 + 1 (288 threads) | 118 | none / none | done, exact |
+| 8 + 1 | 118 | 24 / 168 | done, exact |
+| 8 + 1 | 118 | 24 / 176 | hang |
+| 8 + 1 | 118 | none / 176 | hang |
+| 8 + 4 (384 threads) | 118 | none / 176 | hang |
+| 8 + 4 | 118 | none / 200 | hang |
+| 8 + 4 | 118 | 40 / 200 | done, exact |
+| 8 + 4 | 118 | 40 / 232 | done, exact |
+
+(Seven of these rungs are the probe's contracts, `PROBE PASS setmaxnreg-split contracts=7`; the other four were run
+once while narrowing the rule.)
+
+What the table rules out: "a lone producer warp hangs" (4 + 1 at 24 / 208 completes), "the wall is the compiled
+register count" (118 -> 168 completes), and "an `.inc` nobody pays for always hangs" (4 + 4 at none / 232 completes).
+What fits every rung: the per-thread quota at launch is 65536 / (128 x warpgroups of the CTA) -- 256 for two
+warpgroups, 170 for three -- and above it an `.inc` needs registers from a `.dec` executed by a whole warpgroup.
+The 288-thread CTA of the original run launched at 168, which is that share rounded down to a multiple of 8, so
+"above the launch value" and "above the share" were the same wall there.
+
+Not established: what a split buys in time on a register-starved consumer; whether ptxas drops `setmaxnreg` without
+`min_blocks_per_mp` (every rung had it).

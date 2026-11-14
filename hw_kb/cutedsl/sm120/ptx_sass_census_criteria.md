@@ -5,10 +5,11 @@
 > `PROBE PASS warp-mma-fp8-ldsm contracts=17`; worked example in §7), and gotcha 11 + new gotchas 21-22 on a cp.async
 > multistage mainloop (`probes/sm120/mechanisms/cpasync_multistage_check.py`, `PROBE PASS cpasync-multistage contracts=19`),
 > gotcha 23 on TMA + mbarrier mainloops (`probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`,
-> `PROBE PASS tma-mbarrier contracts=12`), and gotcha 24 on the same probe plus the block-scaled one
+> `PROBE PASS tma-mbarrier contracts=13`), and gotcha 24 on the same probe plus the block-scaled one
 > (`probes/sm120/mechanisms/blockscaled_mma_check.py`, `PROBE PASS blockscaled-mma contracts=15`). Gotchas 4-9 are transcribed method (their readings
-> were taken on sm90 barrier / conversion probes); gotchas 11-16 read the orchestration dossier axes
-> (`commit` / `supply` / `rings` / `cache_ops` / `nbar_*`) on sm90 TMA + wgmma kernels and are **not re-checked on sm120**.
+> were taken on sm90 barrier / conversion probes); gotchas 12-16 read the orchestration dossier axes
+> (`commit` / `supply` / `rings` / `cache_ops` / `nbar_*`) on sm90 TMA + wgmma kernels and are **not re-checked on sm120**
+> (see the note above gotcha 12 for what of them carries over).
 >
 > One file per hardware interface. Operator-agnostic; mechanism only. This entry is a **reading recipe**: it does not
 > teach how to use any mechanism, only how to write the criterion itself that "proves a mechanism really landed in
@@ -257,6 +258,14 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
     **increase or decrease** in the `commit` rows a footprint.
     `cache_ops` is counted over the whole kernel and does not depend on regions; on a fully unrolled tree only it can
     see the cache bits / width / completion mode of cp.async — use it as the anchor.
+> **Gotchas 12-16 are sm90 readings, not re-checked on sm120.** Their worked examples were taken on TMA + wgmma
+> kernels: they name instructions sm120 does not have (`HGMMA`, `WARPGROUP.DEPBAR`), a 132-SM grid, 3D / 4D TMA
+> descriptors and `sm90/...` entries that are not in this tree, and every timing in them is an sm90 timing. What
+> carries over is the reading rule in each bold sentence -- an axis can move because codegen moved, or stay put while
+> the structure changed. On sm120 the same axes are produced by `mma.sync` loops (`HMMA` / `QMMA` / `OMMA`), by
+> `DEPBAR.LE SB` / `bar.sync` / mbarrier waits and on a 110-SM grid; treat any instruction name, count or number
+> below as an illustration, not as a footprint to look for.
+
 12. **The `rings` axis records "present/absent" as a footprint, but** what it measures is the self-increment
     fingerprint of the mbarrier address def-chain — **change the register allocation and the address chain may detour
     through another set of registers, so the self-increment is unchanged but the ring disappears from the axis**.
@@ -504,7 +513,7 @@ fill quality are NCU readings (gotcha 19, [`smem_traffic_triage`](smem_traffic_t
 - Gotchas 21, 22: `probes/sm120/mechanisms/cpasync_multistage_check.py` -- `PROBE PASS cpasync-multistage contracts=19`
   (`orch-commit-s2`, `orch-commit-s3`, `sass-wait-depth-s2`, `sass-wait-depth-s3`); `tests/test_sm120_sass.py`
   (`test_short_mma_sync_page_is_not_below_the_floor`, `test_commit_axis_reads_the_cp_async_wait_depth`).
-- Gotcha 23: `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py` -- `PROBE PASS tma-mbarrier contracts=12`
+- Gotcha 23: `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py` -- `PROBE PASS tma-mbarrier contracts=13`
   (`orch-inline`, `orch-ws`); `tests/test_sm120_sass.py` (`test_mbarrier_addresses_resolve_through_the_lea_addend`,
   which fails without the fix).
 - Gotcha 24: `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py` (`sass-inline`, `sass-ws`, `ctl-unfenced-inline`)

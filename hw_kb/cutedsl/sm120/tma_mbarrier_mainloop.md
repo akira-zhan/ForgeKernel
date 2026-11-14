@@ -2,7 +2,7 @@
 
 > One entry per hardware interface. Operator-agnostic; mechanism only.
 >
-> **Status**: ✅ Verified (GPU probe `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`, `PROBE PASS tma-mbarrier contracts=12`,
+> **Status**: ✅ Verified (GPU probe `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`, `PROBE PASS tma-mbarrier contracts=13`,
 > RTX PRO 5000, CuTe DSL 4.8.0): a 4096^3 GEMM (C fp32 = A . B^T, K-major, CTA 128 x 128, 4 MMA warps) with the supply
 > done by TMA into a 3-stage full / empty mbarrier ring, in two producer shapes, bf16 and e4m3, every consumer fencing
 > (`fence_view_async_shared`) before it releases a stage -- all five configurations bit-exact, the in-loop e4m3 kernel
@@ -98,8 +98,16 @@ How to read it:
 - **A dedicated producer warp costs the second CTA per SM.** NCU reads a register limit of 1 CTA / SM for the 5-warp CTA
   at 178 registers even though 2 x 160 x 178 < 64 K; the explanation consistent with it (not separately probed):
   registers are allocated per warp on a sub-partition (16 K each), and a second 5-warp CTA needs three such warps on
-  one sub-partition. Its smem (3 x 16 KiB + barriers = 50.2 KiB) also just misses
-  the two-per-SM budget. With 4 MMA warps per SM it still beats cp.async at 1 CTA / SM (428-444 vs 405).
+  one sub-partition. Shared memory is not what holds it at one: both shapes launch with the same 50,176 B
+  (3 x 16 KiB + barriers; + 1,024 B the driver adds per CTA), and the in-loop shape runs two of them per SM in a
+  102,400 B smem configuration. NCU does print a shared-memory limit of 1 for the 5-warp CTA, but under a 65,536 B
+  configuration: the carve-out is sized for the one CTA the registers allow, so fewer or smaller stages do not bring
+  the second CTA back -- only the register limit does. With 4 MMA warps per SM it still beats cp.async at 1 CTA / SM
+  (428-444 vs 405).
+- **NCU counts an mbarrier wait as the `sleeping` stall** (`smsp__average_warps_issue_stalled_sleeping_per_issue_active`),
+  not as long-scoreboard or barrier: the shape with a dedicated producer warp reads 1.99 there against 0.21 in-loop
+  (long-scoreboard 0.74 / 0.56, barrier 0.01 / 0.05; same probe, NCU facts). A profile that requests only the
+  long-scoreboard, barrier and MIO-throttle ratios shows no wait at all on a TMA + mbarrier kernel.
 - The stage count moved nothing measurable here either (e4m3 64 B rows: 2 / 3 / 4 / 6 stages read 422-426 with the
   producer warp; 463.5 / 463.8 for 2 / 3 stages in-loop; this sweep was taken on the unfenced first version).
 
@@ -158,9 +166,9 @@ How to read it:
   (`create`, `producer_acquire`, `producer_get_barrier`, `producer_commit`, `producer_tail`, `consumer_try_wait`,
   `consumer_wait`, `consumer_release`), `cutlass.pipeline.CooperativeGroup`, `cutlass.pipeline.make_pipeline_state`,
   `cute.struct.MemRange`, `cute.struct.Align`, `cute.arch.make_warp_uniform`, `cute.arch.warp_idx`.
-- GPU probe `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`: `PROBE PASS tma-mbarrier contracts=12`
+- GPU probe `probes/sm120/mechanisms/tma_mbarrier_mainloop_check.py`: `PROBE PASS tma-mbarrier contracts=13`
   (`numerics-{inline,ws}-{fp8,bf16}-r64-s3`, `numerics-ws-fp8-r128-s2`, `stress-inline-fp8`, `sass-{inline,ws}`,
-  `orch-{inline,ws}`, `ctl-unfenced-inline`, `N-occupancy`); fixtures `tests/fixtures/sm120/tma_mbarrier_fp8_{inline,ws}.sass`
+  `orch-{inline,ws}`, `ctl-unfenced-inline`, `N-occupancy`, `N-smem-not-the-limit`); fixtures `tests/fixtures/sm120/tma_mbarrier_fp8_{inline,ws}.sass`
   (fenced) and `tma_mbarrier_fp8_inline_unfenced.sass` (the control).
 - Instruction totals (31.78 M / 31.87 M): `smsp__inst_executed.sum` from the NCU contracts of this probe and of
   `probes/sm120/mechanisms/cpasync_multistage_check.py`.

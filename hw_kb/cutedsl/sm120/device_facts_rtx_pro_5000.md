@@ -157,7 +157,7 @@ timed L2-cold: an FP8 weight of 58.7 MB fits the 96 MB L2, so warm repeated call
   (3 same-card jobs), i.e. ~1.62x the library in the device window, 1.25-1.51x per call L2-cold with launch latency;
   that kernel serves M <= 64 only (it raises for larger M; generation 1 serves 1..128).
 - Result: 1.49x the library in forge's device window (3 same-card jobs; M = 1 / 16 up 1.54 / 1.50x, M = 64 up 1.27x,
-  M = 16 down 1.67x), 1.13-1.48x per call with launch latency included (my cold re-timing); bit-exact against an
+  M = 16 down 1.67x), 1.13-1.48x per call with launch latency included (a separate cold re-timing outside the run); bit-exact against an
   fp32 reference within bf16 rounding and exact on selector inputs for M in 1..128.
 - **NVFP4 transfers**: cuBLASLt's nvfp4 decode GEMM (torch._scaled_mm, M = 1-64) reads 45-50 % of DRAM bandwidth
   L2-cold. The same recipe -- M-sized CTA tile, TMA ring, stream-K with the cross-CTA fixup of
@@ -181,7 +181,7 @@ timed L2-cold: an FP8 weight of 58.7 MB fits the 96 MB L2, so warm repeated call
   - a pointer chase capped at fewer steps than the footprint has lines only touches part of it (a 1 GiB chase read
     L2 latency); walk the whole cycle.
 - **Arch-specific build**: the block-scaled forms only exist on the arch-specific target; build with
-  `-gencode arch=compute_120a,code=sm_120a`. A plain `-arch=sm_120a` executable build of the same source failed in
+  `-gencode=arch=compute_120a,code=sm_120a`. A plain `-arch=sm_120a` executable build of the same source failed in
   ptxas with "not supported on .target sm_120".
 - **FP4 operand container in `kind::f8f6f4`**: each e2m1 element occupies one byte with the value in bits [5:2]
   (1.0 = `0x08`); the packed two-per-byte layout belongs to the `mxf4` / `mxf4nvf4` kinds (1.0 pair = `0x22`).
