@@ -4,7 +4,7 @@
 
 [task]
 language = "cutedsl"                 # cutedsl | cuda
-arch     = "sm100"                   # the target GPU (sm90, sm100, ...)
+arch     = "sm100"                   # the target GPU: sm90 | sm100 | sm103 | sm120 (the GPU the jobs run on)
 
 # The reference: the implementation to learn from and to beat. Leave the table out and a
 # /goal session writes one first.

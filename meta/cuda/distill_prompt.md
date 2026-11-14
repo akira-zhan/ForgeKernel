@@ -64,6 +64,8 @@ target performance from scratch. This is the first step of the distillation loop
 - `MILESTONE` = `{MILESTONE_PATH}` — **write** the complete milestone you author **to this path** (you create the file).
 - `KB_DIR` = `{KB_READ_DIR}` — operator-agnostic hardware-interface examples (where the student looks when stuck on "how do I use some primitive"; while authoring you may cite their existence). It contains only this architecture's (`{KB_ARCH}`) tree; trees of other architectures are not in the read set — do not cite them while authoring.
 
+{ARCH_NOTES}
+
 ## Task: write milestone v1
 
 Read `TEMPLATE` → read `POLICY` → read `ARCH_REF` + `REF_BASELINE` to get the two references → read `ORACLE` to extract the mechanisms →

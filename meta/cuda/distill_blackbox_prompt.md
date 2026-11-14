@@ -54,6 +54,8 @@ Your job: distill the reference implementation into a natural-language optimizat
 - `MILESTONE` = `{MILESTONE_PATH}` — **write** the complete authored milestone **to this path**.
 - `KB_DIR` = `{KB_READ_DIR}` — operator-agnostic hardware-interface examples. It contains only this architecture's (`{KB_ARCH}`) tree; trees of other architectures are not in the read set.
 
+{ARCH_NOTES}
+
 ## Task
 
 Read `TEMPLATE` → read `POLICY` → read `RECON_REPORT` and the candidates table → write `{MILESTONE_PATH}` following the `POLICY §9` skeleton.

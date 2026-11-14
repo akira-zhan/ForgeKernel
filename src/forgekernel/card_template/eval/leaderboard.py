@@ -409,15 +409,18 @@ def _precision():
 # A CUDA C++ kernel file (problem.json kernel_file ``*.cu``, loop language ``cuda-sol``) is
 # compiled here the way SOL-ExecBench builds a cuda_cpp solution with compile_options: torch
 # cpp_extension, the file's own PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) binding, CUTLASS
-# headers on the include path, -O3 --use_fast_math and -lcuda (SOL's defaults), sm_100a unless
-# a flag names an arch, plus the flags of any ``// fk-cuda-cflags: ...`` line. `forge <op>
+# headers on the include path, -O3 --use_fast_math and -lcuda (SOL's defaults), the card's
+# architecture (cuda_gencode: CUTE_DSL_ARCH, the boards' sm_100a when it is unset) unless a
+# flag names an arch, plus the flags of any ``// fk-cuda-cflags: ...`` line. `forge <op>
 # leaderboard export` writes the same list into the solution's compile_options, so the bytes
 # judged and timed here are the bytes the board builds. The file is compiled alone (copied
 # into its build directory): a solution is this one file.
 CUDA_KERNEL_SUFFIXES = (".cu",)
 CUDA_DEFAULT_CFLAGS = ["-O3", "--use_fast_math"]
 CUDA_DEFAULT_LDFLAGS = ["-lcuda"]
-CUDA_GENCODE = "-gencode=arch=compute_100a,code=sm_100a"
+CUDA_GENCODE = "-gencode=arch=compute_100a,code=sm_100a"  # the boards' B200
+CUDA_ARCH_ENV = "CUTE_DSL_ARCH"
+_CUDA_ARCH = re.compile(r"sm_?(\d+a?)")
 CUDA_FLAGS_LINE = re.compile(r"^[ \t]*//[ \t]*fk-cuda-cflags:(.*)$", re.M)
 # "1" from the loop's stall pricing (recon/stall_price_run.py): the build adds -lineinfo.
 CUDA_LINEINFO_ENV = "FK_CUDA_LINEINFO"
@@ -432,6 +435,14 @@ CUDA_FLAG_OK = re.compile(
     r"|--?default-stream=(legacy|null|per-thread)|-Xcompiler=-O[0-3]|-w|-Wno-[-\w]+")
 
 
+def cuda_gencode(arch: str | None = None) -> str:
+    """-gencode of the card's architecture: ``arch``, else CUTE_DSL_ARCH (gpu_entry.sh exports
+    it: sm_120a on an sm120 task card), else the boards' sm_100a. An image built for another
+    architecture does not load: "no kernel image is available for execution on the device"."""
+    m = _CUDA_ARCH.fullmatch(arch or os.environ.get(CUDA_ARCH_ENV) or "")
+    return f"-gencode=arch=compute_{m[1]},code=sm_{m[1]}" if m else CUDA_GENCODE
+
+
 def cuda_kernel_flags(src: str) -> list[str]:
     """nvcc flags of a CUDA kernel file: SOL's defaults, the file's fk-cuda-cflags, the arch.
     Raises ValueError on a flag outside CUDA_FLAG_OK."""
@@ -441,7 +452,7 @@ def cuda_kernel_flags(src: str) -> list[str]:
                          f"flags only: no paths, libraries or linker options)")
     flags = CUDA_DEFAULT_CFLAGS + [f for f in extra if f not in CUDA_DEFAULT_CFLAGS]
     if not any(f.startswith(("-gencode", "-arch")) for f in flags):
-        flags.append(CUDA_GENCODE)
+        flags.append(cuda_gencode())
     return flags
 
 

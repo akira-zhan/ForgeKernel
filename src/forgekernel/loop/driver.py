@@ -674,13 +674,39 @@ def _is_cuda(ctx: LoopContext) -> bool:
     return lang_mode.is_cuda(ctx.language) or lang_mode.is_cuda_kernel_file(ctx.kernel_file)
 
 
+def _card_arch(kb_arch: str) -> str:
+    """``sm120`` -> ``sm_120a``: the card's CUTE_DSL_ARCH for a KB architecture
+    (taskcard.CUTE_ARCH spells the same rule for the task card)."""
+    m = re.fullmatch(r"sm_?(\d+)a?", kb_arch or "")
+    return f"sm_{m[1]}a" if m else kb_arch
+
+
+def _arch_notes(ctx: LoopContext) -> str:
+    """``meta/arch/<kb_arch>.md`` rendered, or "" when the architecture has no such file.
+
+    The prompts' worked examples were written on the architectures the loop started on
+    (sm90, then sm100): a 132-SM persistent grid, a 228 KiB smem limit, HGMMA fingerprints,
+    the HBM DRAM metric names. A run on another architecture gets the corrections here, in
+    one section the prompts place next to their inputs, instead of a fork of every prompt."""
+    try:
+        text = (ctx.meta_dir / "arch" / f"{ctx.kb_arch}.md").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    return (text.replace("{CARD_ARCH}", _card_arch(ctx.kb_arch))
+            .replace("{KB_READ_DIR}", str(kb_read_dir(ctx))).strip())
+
+
 def _bindings(ctx: LoopContext) -> dict[str, str]:
     repo_root = ctx.meta_dir.parent
     return {
+        "{ARCH_NOTES}": _arch_notes(ctx),
         "{MILESTONE_PATH}": str(ctx.milestone),
         "{MILESTONE}": str(ctx.milestone),
         "{KB_DIR}": str(ctx.kb_dir),
         "{KB_ARCH}": ctx.kb_arch,
+        # The compile target of this run's card (sm120 -> sm_120a): what the card's
+        # CUTE_DSL_ARCH is and what a CUDA kernel file is built for by default.
+        "{CARD_ARCH}": _card_arch(ctx.kb_arch),
         # The read set, rendered from the same function the lookup and the lint
         # gates use, so a prompt cannot name a tree the loop does not enforce.
         "{KB_READ_DIR}": str(kb_read_dir(ctx)),
@@ -6198,7 +6224,7 @@ def run_meta_step(ctx: LoopContext, *, best_before: float | None = None,
             ref_role=recon_baseline.role, ref_name=recon_baseline.ref_name)
     ncu_view = (f"\n\n## NCU hardware ground truth (inline, per-iteration bottleneck verdicts — "
                 f"primary evidence, read before judging)\n"
-                f"{render_ncu_report(records, baseline=arch_ncu)}"
+                f"{render_ncu_report(records, baseline=arch_ncu, arch=ctx.kb_arch)}"
                 f"\n\n### Metric evolution table\n{render_ncu_trace(records)}\n")
     if recon:
         # Two-sided reconciliation: the digest above never quoted the ref side,

@@ -19,6 +19,8 @@ from the milestone the next batch of decisions to do (anything from one decision
 - `WORKSPACE` = `{WORKSPACE}` — your isolated workspace (a single-branch checkout). You change **only**
   `{KERNEL_FILE}` here (this operator's target kernel file).
 
+{ARCH_NOTES}
+
 ## Steps of one iteration
 1. Read `MILESTONE` + `STATUS_JSONL`: which decisions are done / reverted, current performance, the retry preconditions in the dead-end table.
    **`decision_id: REOPEN` rows (reopen in place)**: after a meta patch changes some decisions, the driver **does not roll back** the workspace;
@@ -51,11 +53,11 @@ from the milestone the next batch of decisions to do (anything from one decision
      adds the decisions — that is exactly what this system exists to measure.
 3. Implement the chosen decisions in `WORKSPACE/{KERNEL_FILE}` using **`{LANGUAGE}`**. When you do not know how to use a hardware primitive, look it up in `KB_DIR`.
    Language constraints (apply the one for `{LANGUAGE}`):
-   - **cutedsl**: use `cutlass.cute` (Python DSL, `cute.compile` JIT). Using `torch.matmul`/`torch.mm`/cuBLAS as the kernel is **forbidden** — that is cheating; the kernel must be WGMMA/TMA cute code you composed yourself.
-   - **inline-ptx**: CUDA-C + hand-written WGMMA/TMA PTX in `asm volatile`.
+   - **cutedsl**: use `cutlass.cute` (Python DSL, `cute.compile` JIT). Using `torch.matmul`/`torch.mm`/cuBLAS as the kernel is **forbidden** — that is cheating; the kernel must be tensor-core cute code you composed yourself from the MMA / copy primitives `KB_DIR` documents for this architecture.
+   - **inline-ptx**: CUDA-C + hand-written MMA / copy PTX in `asm volatile` (the instructions `KB_DIR` documents for this architecture).
    - **cutlass-cpp**: CUDA-C + CUTLASS/CuTe C++ template headers.
    - **cuda-cpp**: plain CUDA-C (no CUTLASS, no hand-written PTX).
-   - **cuda-sol**: single-file CUDA C++ (the leaderboard's cuda_cpp format: it carries its own `PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)` binding and the operator tree compiles it the way the leaderboard does; for compile options and the `// fk-cuda-cflags:` line see the tree's README). CUDA-C/C++, inline PTX (tcgen05 / TMA / mbarrier etc.) and CUTLASS/CuTe C++ headers are all allowed. Calling cuBLAS or another vendor operator library, or torch compute operators (`torch::matmul` etc.), as the kernel is **forbidden** — the kernel must be CUDA code you wrote yourself.
+   - **cuda-sol**: single-file CUDA C++ (the leaderboard's cuda_cpp format: it carries its own `PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)` binding and the operator tree compiles it the way the leaderboard does, for `{CARD_ARCH}`; for compile options and the `// fk-cuda-cflags:` line see the tree's README). CUDA-C/C++, inline PTX (tcgen05 / TMA / mbarrier etc.) and CUTLASS/CuTe C++ headers are all allowed. Calling cuBLAS or another vendor operator library, or torch compute operators (`torch::matmul` etc.), as the kernel is **forbidden** — the kernel must be CUDA code you wrote yourself.
    - **triton**: `@triton.jit`.
 4. **Do not change** the frozen contract: `host.py`, `tests/*`, the kernel signature/parameters/dtypes.
 5. Produce this iteration's record (see below). You do **not** run the GPU — the driver submits and fills in correctness/perf/verdict.

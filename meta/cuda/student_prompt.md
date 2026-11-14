@@ -19,6 +19,8 @@ from the milestone the next batch of decisions to do (anything from one decision
 - `WORKSPACE` = `{WORKSPACE}` — your isolated workspace (a single-branch checkout). You change **only**
   `{KERNEL_FILE}` here (this operator's target kernel file).
 
+{ARCH_NOTES}
+
 ## Steps of one iteration
 1. Read `MILESTONE` + `STATUS_JSONL`: which decisions are done / reverted, current performance, the retry preconditions in the dead-end table.
    **`decision_id: REOPEN` rows (reopen in place)**: after a meta patch changes some decisions, the driver **does not roll back** the workspace;
@@ -52,9 +54,9 @@ from the milestone the next batch of decisions to do (anything from one decision
 3. Implement the chosen decisions in `WORKSPACE/{KERNEL_FILE}` using **`{LANGUAGE}`** (CUDA C++). When you do not know how to use a hardware primitive, look it up in `KB_DIR`,
    then in the CUDA / CUTLASS headers on this machine. Language constraints:
    - **Single-file CUDA C++** (the leaderboard's cuda_cpp format): the file carries its own `PYBIND11_MODULE(TORCH_EXTENSION_NAME, m)` binding;
-     the entry function's name and signature are frozen by the operator tree; the tree compiles it the way the leaderboard does (`-O3 --use_fast_math`, sm_100a, `-lcuda`, CUTLASS headers);
+     the entry function's name and signature are frozen by the operator tree; the tree compiles it the way the leaderboard does (`-O3 --use_fast_math`, `{CARD_ARCH}` — this run's architecture, `-lcuda`, CUTLASS headers);
      extra compile options can only go on the `// fk-cuda-cflags:` line (whitelist in the tree's README). A compile failure is recorded as `COMPILE_ERROR`.
-   - Allowed: CUDA C/C++, inline PTX (`asm volatile`: tcgen05 / TMA / mbarrier / `elect.sync` etc.),
+   - Allowed: CUDA C/C++, inline PTX (`asm volatile`: this architecture's MMA, TMA / mbarrier, `elect.sync` etc. — `KB_DIR` says which exist),
      CUTLASS / CuTe C++ template headers. Calling cuBLAS or another vendor operator library, or torch compute operators (`torch::matmul` etc.), as the
      kernel is **forbidden** — that is cheating; the kernel must be CUDA code you wrote yourself.
    - **The operator tree's fence** (sealed-reference trees): the kernel file must not contain dynamic loading, the Python / pybind11 C API, CUDA module loaders,

@@ -215,3 +215,56 @@ def test_quarantine_resolves_a_finding_against_the_kb_root(tmp_path):
     assert not leaky.exists()
     assert (tmp_path / "kb_quarantine" / "leaky.md").is_file()
     assert (kb / "sm100" / "index.md").is_file()  # the tree itself is untouched
+
+
+# --- architecture notes ------------------------------------------------------------------
+# The prompts' worked examples were written on sm90 / sm100 kernels (a 132-SM grid, a
+# 228 KiB smem limit, HGMMA fingerprints, the HBM DRAM metric names). A run on an
+# architecture with a meta/arch/<kb_arch>.md gets that file rendered into its prompts.
+
+ARCH_NOTE_PROMPTS = ("student_prompt.md", "recon_prompt.md", "distill_prompt.md",
+                     "distill_blackbox_prompt.md")
+
+
+def _arch_ctx(tmp_path, arch):
+    ctx = _ctx(tmp_path, FakeBackend([], []))
+    ctx.meta_dir = REPO / "meta"
+    ctx.kb_arch = arch
+    return ctx
+
+
+def test_sm120_bindings_carry_the_compile_target_and_the_architecture_notes(tmp_path):
+    b = _bindings(_arch_ctx(tmp_path, "sm120"))
+    assert b["{CARD_ARCH}"] == "sm_120a"
+    notes = b["{ARCH_NOTES}"]
+    assert notes.startswith("## Architecture notes for this run: sm120")
+    assert not re.findall(r"\{[A-Z][A-Z_]*\}", notes), "a token survived inside the notes"
+    for fact in ("mma.sync", "110 SMs", "101,376 B", "dram__bytes_op_read.sum", "sleeping",
+                 "sm_120a", str(tmp_path / "sm120")):
+        assert fact in notes, fact
+    # every other architecture: the compile target follows the tree, and there are no notes
+    for arch, card in (("sm90", "sm_90a"), ("sm100", "sm_100a"), ("sm103", "sm_103a")):
+        b = _bindings(_arch_ctx(tmp_path, arch))
+        assert b["{CARD_ARCH}"] == card and b["{ARCH_NOTES}"] == ""
+
+
+@pytest.mark.parametrize("mode", ["", "cuda"])
+@pytest.mark.parametrize("name", ARCH_NOTE_PROMPTS)
+def test_the_prompts_place_the_architecture_notes_and_only_on_that_architecture(tmp_path, name, mode):
+    path = REPO / "meta" / mode / name
+    out = render_prompt(path, _bindings(_arch_ctx(tmp_path, "sm120")))
+    assert "{ARCH_NOTES}" not in out and "{CARD_ARCH}" not in out
+    assert out.count("## Architecture notes for this run: sm120") == 1
+    other = render_prompt(path, _bindings(_arch_ctx(tmp_path, "sm100")))
+    assert "{ARCH_NOTES}" not in other and "Architecture notes for this run" not in other
+    # (not a bare "sm120": the rendered prompt carries absolute paths of the checkout)
+    assert "GB202" not in other and "sm_120a" not in other
+
+
+def test_the_cuda_student_is_told_the_cards_compile_target(tmp_path):
+    path = REPO / "meta" / "cuda" / "student_prompt.md"
+    out = render_prompt(path, _bindings(_arch_ctx(tmp_path, "sm120")))
+    line = next(ln for ln in out.splitlines() if "the tree compiles it the way the leaderboard does" in ln)
+    assert "`sm_120a`" in line and "sm_100a" not in line
+    out = render_prompt(path, _bindings(_arch_ctx(tmp_path, "sm100")))
+    assert "`sm_100a`" in next(ln for ln in out.splitlines() if "the tree compiles it" in ln)

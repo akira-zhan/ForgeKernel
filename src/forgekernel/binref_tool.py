@@ -4,8 +4,9 @@ copied in as binref.py; see forgekernel.binref).
 
 The reference is a SOL-ExecBench / FlashInfer-Bench solution compiled into
 ref_bin/<module>.so the way SOL-ExecBench builds a cuda_cpp solution (torch
-cpp_extension; sm_100a unless the solution names an arch; CUTLASS headers; only the
-solution's top-level C/C++/CUDA files are compiled, the rest are there to #include). Its
+cpp_extension; the card's arch -- CUTE_DSL_ARCH, else sm_100a -- unless the solution names
+one; CUTLASS headers; only the solution's top-level C/C++/CUDA files are compiled, the rest
+are there to #include). Its
 sources live under src/ and never leave this tree: the card only gets the .so.
 
     python3 binref.py build        compile src/ into ref_bin/<module>.so; prints SO_* lines
@@ -19,6 +20,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import sys
 from pathlib import Path
@@ -29,6 +31,16 @@ SO = HERE / "ref_bin" / f"{META['module']}.so"
 BUILD = Path(os.environ.get("BINREF_BUILD_DIR", "/workspace/binref_build")) / META["module"]
 CPP_SUFFIXES = (".cu", ".cpp", ".cc", ".cxx", ".c")
 BLACKWELL_GENCODE = "-gencode=arch=compute_100a,code=sm_100a"
+
+
+def default_gencode() -> str:
+    """-gencode of the card's architecture (CUTE_DSL_ARCH, exported by gpu_entry.sh: sm_120a
+    on an sm120 task card); the boards' sm_100a when it is unset. An image built for another
+    architecture does not load on the device."""
+    m = re.fullmatch(r"sm_?(\d+a?)", os.environ.get("CUTE_DSL_ARCH") or "")
+    return f"-gencode=arch=compute_{m[1]},code=sm_{m[1]}" if m else BLACKWELL_GENCODE
+
+
 # SOL-ExecBench CompileOptions defaults (core/data/solution.py): a solution that gives
 # compile_options but leaves a key out gets these. -lcuda is what lets driver-API calls
 # (cuTensorMapEncodeTiled for TMA descriptors) resolve; without it the .so fails to import.
@@ -103,7 +115,7 @@ def _build() -> int:
         shutil.copy2(HERE / "src" / rel, dst)
     cuda, cflags, ldflags = compile_flags(META.get("compile_options"))
     if not any("-gencode" in f or "-arch" in f for f in cuda):
-        cuda = [BLACKWELL_GENCODE] + cuda
+        cuda = [default_gencode()] + cuda
     cutlass, missing = cutlass_dir()
     if missing:  # a source that includes CUTLASS / CuTe fails below on this node: say why up front
         print(f"[binref] WARNING {missing}: a source that includes cutlass/ or cute/ "

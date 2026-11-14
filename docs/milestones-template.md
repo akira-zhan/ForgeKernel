@@ -29,7 +29,7 @@ The instance file **must** contain the following sections, **in order**:
 - **Fixed shapes**: one table of benchmark shapes (B/H/N/D/dtype/mask etc.), unchanged throughout.
 - **Reference (ref)**: what the ref is and how it runs (bench script, NCU script paths), and the
   correctness golden reference (usually FP32 autograd / torch matmul).
-- **Hardware**: GPU model, peak FLOPS / bandwidth, target ISA (e.g. sm_90a WGMMA+TMA).
+- **Hardware**: GPU model, peak FLOPS / bandwidth, target ISA (e.g. sm_90a WGMMA+TMA; sm_120a `mma.sync` fed by cp.async or TMA).
 - **Target**: the relation to the ref (parity / some ratio); only the qualitative target is written
   here, the quantitative number is converted from the ref baseline (see A.4).
 
@@ -181,7 +181,7 @@ of a decision lies in a modifier or an instruction variant of the same family (c
 width, wait encoding, reduction variant…), the five-tuple must carry
 `[EXPR: A=<DSL spelling> | none(<verbatim op signature>); B=<verbatim inline PTX> | none(<footprint absent/compile error>); C=toolchain-limit | ->]`:
 rung A = a constructor argument / enum of the DSL op (the evidence is the verbatim signature
-printed in a job, not memory); rung B = issuing PTX directly per `hw_kb/cutedsl/sm90/ptx_escape.md` (the
+printed in a job, not memory); rung B = issuing PTX directly per the `ptx_escape.md` entry of this run's KB tree (`KB_DIR`) (the
 evidence is a footprint count); rung C = the toolchain limit, **which may be written only after both
 A and B were measured as none**. The acceptance line of such a decision is anchored to that axis of
 `[VERIFY: sass-derived]`, not to a derived proxy (a modifier changes latency, not volume; a proxy

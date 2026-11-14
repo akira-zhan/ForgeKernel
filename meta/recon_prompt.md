@@ -33,6 +33,8 @@ Your task: **measure its architecture** and produce two files for the next step,
 - Recon tree = `{RECON_DIR}` — where you write scripts (**teacher-only; it never enters the student's job**)
 - Hardware calculator = `{SIMULATOR_DIR}` — pure Python, no GPU needed, see channel 4
 
+{ARCH_NOTES}
+
 ## Getting the scripts to run
 
 You **cannot** submit GPU jobs yourself. Once a script is written, send **one line**:
