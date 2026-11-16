@@ -38,6 +38,29 @@ def test_the_environment_wins_over_the_file(tmp_path):
     assert (m.delivery, m.gpu) == ("local", "3")
 
 
+def test_the_job_timeout_is_a_machine_setting_like_the_others(tmp_path):
+    """FK_JOB_TIMEOUT_S used to be read from the process environment when the task-card module
+    was imported: set in local.env it was ignored, and a long job was killed at the default."""
+    from forgekernel import taskcard
+    assert load_machine(tmp_path, environ={}).job_timeout == 1800 == taskcard.JOB_TIMEOUT_S
+    (tmp_path / "local.env").write_text("FK_GPU=3\nFK_JOB_TIMEOUT_S=3600\n")
+    m = load_machine(tmp_path, environ={})
+    assert m.job_timeout == 3600
+    # the card is written with it ...
+    sub = taskcard.write_submit(tmp_path, type("T", (), {"arch": "sm120"})(), m)
+    assert "timeout = 3600" in sub.read_text() and 'gpu = "3"' in sub.read_text()
+    # ... an explicit timeout (the reference tree's) still wins, and so does the environment
+    assert "timeout = 2700" in taskcard.write_submit(tmp_path, type("T", (), {"arch": "sm120"})(), m,
+                                                     timeout=2700).read_text()
+    assert load_machine(tmp_path, environ={"FK_JOB_TIMEOUT_S": "5400"}).job_timeout == 5400
+    # set only in the environment (no line in the file) it is still read
+    (tmp_path / "local.env").write_text("FK_GPU=3\n")
+    assert load_machine(tmp_path, environ={"FK_JOB_TIMEOUT_S": "900"}).job_timeout == 900
+    for bad in ("soon", "0", "-5", "1.5h"):
+        with pytest.raises(MachineError, match="FK_JOB_TIMEOUT_S must be a positive number"):
+            load_machine(tmp_path, environ={"FK_JOB_TIMEOUT_S": bad})
+
+
 def test_ssh_needs_a_host_and_a_dedicated_workdir(tmp_path):
     with pytest.raises(MachineError) as e:
         load_machine(tmp_path, environ={"FK_DELIVERY": "ssh", "REMOTE_WORKDIR": "/tmp"})

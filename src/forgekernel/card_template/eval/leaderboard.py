@@ -1172,6 +1172,12 @@ def sol_correctness(problem: dict, impl, dps: bool, device, prec=None) -> tuple[
     return verdict, [inp]
 
 
+# problem "l2": "cold" rotates copies of the inputs until one sweep exceeds 2 x L2. The cap
+# bounds the copy count for small inputs (the sweep itself is ~2 x L2 bytes whatever the
+# count): 4096 copies cover every input from 2 x L2 / 4096 up (47 KiB on a 96 MiB L2).
+L2_COLD_MAX_COPIES = 4096
+
+
 # --- clocks --------------------------------------------------------------------------
 
 def _flush_buffer(device):
@@ -2357,23 +2363,35 @@ def _task_side(problem: dict, sets: list, kernel, kernel_dps: bool, ref=None,
         outs = allocate_outputs(problem, device) if dps else []
         return [lambda c=c: fn(*c, *outs) for c in copies]
 
-    def l2_copies(inp):
+    rotation = []   # what "cold" amounted to, per input group (protocol.l2_rotation)
+
+    def l2_copies(name, inp):
         # problem "l2": "cold" -- a memory-bound kernel whose inputs fit in L2 reads them from L2
         # on every repeated call; rotate enough copies (the same copies for kernel and
         # reference) that one sweep exceeds twice the L2 size, so each call reads from DRAM.
+        # Whether the sweep got there is recorded and, when it did not, said out loud: the
+        # reading is then L2-warm whatever the task asked for (the copies were capped at 64,
+        # so every input under 2 x L2 / 64 -- 3 MiB on a 96 MiB L2 -- was timed warm and
+        # reported as cold).
         if problem.get("l2") != "cold":
             return [inp]
         nbytes = sum(x.numel() * x.element_size() for x in inp if hasattr(x, "element_size"))
         l2 = getattr(torch.cuda.get_device_properties(device), "L2_cache_size", 0) or 0
-        if nbytes <= 0 or l2 <= 0:
-            return [inp]
-        n = min(64, max(1, -(-2 * l2 // nbytes)))
+        n = min(L2_COLD_MAX_COPIES, max(1, -(-2 * l2 // nbytes))) if nbytes > 0 and l2 > 0 else 1
+        reached = l2 > 0 and n * nbytes >= 2 * l2
+        rotation.append({"group": name, "input_bytes": nbytes, "copies": n, "l2_bytes": l2,
+                         "reached": reached})
+        if not reached:
+            why = ("the device reports no L2 size" if l2 <= 0 else "the inputs hold no tensor bytes"
+                   if nbytes <= 0 else f"{n} copies x {nbytes} B < 2 x L2 ({2 * l2} B)")
+            print(f'[leaderboard] WARNING l2 = "cold" not reached for input group {name} ({why}): '
+                  f"this reading is L2-warm", file=sys.stderr, flush=True)
         return [inp] + [[x.clone() if hasattr(x, "clone") else x for x in inp] for _ in range(n - 1)]
 
     groups = [g["name"] for g in task_groups(problem)]
     work = []
     for name, inp in zip(groups, sets):
-        copies = l2_copies(list(inp))
+        copies = l2_copies(name, list(inp))
         work.append((name, calls(kernel, kernel_dps, inp, copies), calls(ref, ref_dps, inp, copies)))
     result = timing.measure_windows_workloads(work, burn_in_s=BURN_IN_S)
     block = timing.workloads_performance(result)
@@ -2381,7 +2399,10 @@ def _task_side(problem: dict, sets: list, kernel, kernel_dps: bool, ref=None,
     block["leaderboard"] = {
         "suite": SUITE_TASK, "upstream": UPSTREAM[SUITE_TASK], "timer": "timing.py",
         "protocol": {"aggregate": "geomean over input groups", "window": problem.get("timing"),
-                     "l2": problem.get("l2", "warm")},
+                     "l2": problem.get("l2", "warm"),
+                     # only on a "cold" problem: did every group's sweep exceed 2 x L2
+                     **({"l2_reached": all(r["reached"] for r in rotation),
+                         "l2_rotation": rotation} if rotation else {})},
         "reading": "geometric mean over the shape's input groups of timing.py's windows",
         "kernel_per_set_ms": [_round(w.get("device_median_ms")) for w in block["workloads"]],
         "ref_per_set_ms": [_round(w.get("ref_device_ms")) for w in block["workloads"]

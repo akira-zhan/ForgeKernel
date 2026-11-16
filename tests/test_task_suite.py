@@ -185,3 +185,63 @@ def test_calibration_of_an_exact_reference_lands_on_the_floor(tmp_path, capsys):
     lb._task_calibrate(p, judge, False, "cpu")
     cal = _calibration(capsys)
     assert cal["match"] and cal["tolerance"]["y"] == lb.TASK_FLOOR["float32"]
+
+
+# --- [target] l2 = "cold": the rotation, and whether it got there -----------------------------
+
+class _Timing:
+    """Stands in for eval/timing.py (CUDA): keeps the callables it was handed."""
+
+    def __init__(self):
+        self.work = None
+
+    def measure_windows_workloads(self, work, burn_in_s=None):
+        self.work = work
+        return {"n": len(work)}
+
+    def workloads_performance(self, result):
+        return {"workloads": [{"device_median_ms": 1.0, "ref_device_ms": 2.0}] * result["n"]}
+
+
+def _cold_side(tmp_path, monkeypatch, l2_bytes, mode="cold"):
+    import sys
+    import types
+    timing = _Timing()
+    monkeypatch.setitem(sys.modules, "timing", timing)
+    monkeypatch.setattr(lb.torch.cuda, "get_device_properties",
+                        lambda device: types.SimpleNamespace(L2_cache_size=l2_bytes))
+    problem = _problem(tmp_path)
+    if mode is not None:
+        problem["l2"] = mode
+    sets = [[torch.zeros(4, 16), torch.ones(16)] for _ in GROUPS]      # 320 B per input set
+    block = lb._task_side(problem, sets, _rms, False, _rms, False, device="cpu")
+    return block["leaderboard"]["protocol"], timing.work
+
+
+def test_cold_timing_rotates_until_one_sweep_exceeds_twice_the_l2(tmp_path, monkeypatch):
+    proto, work = _cold_side(tmp_path, monkeypatch, l2_bytes=64 * 1024)
+    assert proto["l2"] == "cold" and proto["l2_reached"] is True
+    # 320 B inputs against a 64 KiB L2: 410 copies -- far over the old cap of 64, which left
+    # the sweep at 20 KiB (all of it inside L2) under a protocol that still said "cold"
+    assert [r["copies"] for r in proto["l2_rotation"]] == [410, 410]
+    assert all(r["copies"] * r["input_bytes"] >= 2 * r["l2_bytes"] for r in proto["l2_rotation"])
+    for name, kernel_fns, ref_fns in work:
+        assert len(kernel_fns) == len(ref_fns) == 410            # one callable per copy, both sides
+
+
+def test_cold_timing_says_so_when_the_sweep_cannot_reach_twice_the_l2(tmp_path, monkeypatch, capsys):
+    proto, work = _cold_side(tmp_path, monkeypatch, l2_bytes=1 << 20)   # needs 6554 copies > the cap
+    assert proto["l2"] == "cold" and proto["l2_reached"] is False
+    assert [r["copies"] for r in proto["l2_rotation"]] == [lb.L2_COLD_MAX_COPIES] * 2
+    err = capsys.readouterr().err
+    assert err.count('WARNING l2 = "cold" not reached') == 2 and "this reading is L2-warm" in err
+    # a device that reports no L2 size: one copy, and the same warning instead of silence
+    proto, work = _cold_side(tmp_path, monkeypatch, l2_bytes=0)
+    assert proto["l2_reached"] is False and len(work[0][1]) == 1
+    assert "the device reports no L2 size" in capsys.readouterr().err
+
+
+def test_warm_timing_is_one_input_set_and_carries_no_rotation(tmp_path, monkeypatch, capsys):
+    proto, work = _cold_side(tmp_path, monkeypatch, l2_bytes=64 * 1024, mode=None)
+    assert proto["l2"] == "warm" and "l2_reached" not in proto and "l2_rotation" not in proto
+    assert all(len(k) == 1 for _, k, _ in work) and capsys.readouterr().err == ""

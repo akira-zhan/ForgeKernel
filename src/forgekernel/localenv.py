@@ -8,6 +8,7 @@ Keys the harness reads:
 
     FK_DELIVERY      local | ssh                    (default: local)
     FK_GPU           CUDA device index to run on    (default: 0)
+    FK_JOB_TIMEOUT_S one GPU job's wall clock, in s (default: 1800)
     REMOTE_HOST      ssh: host alias; must log in non-interactively
     REMOTE_WORKDIR   ssh: absolute directory on the host, dedicated to forgekernel
     REMOTE_ENV_FILE  ssh, optional: sourced on the host before every command
@@ -31,6 +32,10 @@ LOCAL_ENV = "local.env"
 DELIVERY_LOCAL = "local"
 DELIVERY_SSH = "ssh"
 DELIVERIES = (DELIVERY_LOCAL, DELIVERY_SSH)
+# One GPU job's wall clock. A long workload priced over many lever variants can need more
+# (sm120 attention, b1 s16k: 12+ variant timings outran 1800 s): FK_JOB_TIMEOUT_S.
+JOB_TIMEOUT_S = 1800
+JOB_TIMEOUT_KEY = "FK_JOB_TIMEOUT_S"
 
 _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -50,6 +55,7 @@ class Machine:
     remote_workdir: str = ""
     remote_env_file: str = ""
     env: dict = field(default_factory=dict)   # every KEY=VALUE the file sets (merged)
+    job_timeout: int = JOB_TIMEOUT_S          # FK_JOB_TIMEOUT_S, from the environment or the file
 
     def describe(self) -> str:
         if self.delivery == DELIVERY_SSH:
@@ -97,7 +103,7 @@ def load_machine(root: str | Path | None = None, environ=None) -> Machine:
     file_env = read_env_file(Path(root if root is not None else repo_root()) / LOCAL_ENV)
     merged = dict(file_env)
     for k in list(file_env) + ["FK_DELIVERY", "FK_GPU", "REMOTE_HOST", "REMOTE_WORKDIR",
-                               "REMOTE_ENV_FILE"]:
+                               "REMOTE_ENV_FILE", JOB_TIMEOUT_KEY]:
         if k in environ:
             merged[k] = environ[k]
     problems: list[str] = []
@@ -107,6 +113,17 @@ def load_machine(root: str | Path | None = None, environ=None) -> Machine:
     gpu = (merged.get("FK_GPU") or "0").strip()
     if not gpu.isdigit():
         problems.append(f"FK_GPU must be a CUDA device index, got {gpu!r}")
+    # Read here, with the machine, so the file sets it like every other key: it used to be
+    # read from the process environment when the task-card module was imported, and a value
+    # in local.env was silently ignored (the job was killed at the default).
+    raw_timeout = (merged.get(JOB_TIMEOUT_KEY) or "").strip()
+    job_timeout = JOB_TIMEOUT_S
+    if raw_timeout:
+        if raw_timeout.isdigit() and int(raw_timeout) > 0:
+            job_timeout = int(raw_timeout)
+        else:
+            problems.append(f"{JOB_TIMEOUT_KEY} must be a positive number of seconds, "
+                            f"got {raw_timeout!r}")
     host = (merged.get("REMOTE_HOST") or "").strip()
     workdir = (merged.get("REMOTE_WORKDIR") or "").strip()
     env_file = (merged.get("REMOTE_ENV_FILE") or "").strip()
@@ -121,4 +138,4 @@ def load_machine(root: str | Path | None = None, environ=None) -> Machine:
     if problems:
         raise MachineError(problems)
     return Machine(delivery=delivery, gpu=gpu, remote_host=host, remote_workdir=workdir,
-                   remote_env_file=env_file, env=merged)
+                   remote_env_file=env_file, env=merged, job_timeout=job_timeout)
